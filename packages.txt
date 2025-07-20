@@ -1,3 +1,5 @@
+pip install --quiet pytesseract pillow opencv-python ipywidgets numpy scipy scikit-image
+!apt update -qq && apt install -qq -y tesseract-ocr tesseract-ocr-all
 tesseract-ocr
 tesseract-ocr-all
 tesseract-ocr-eng
