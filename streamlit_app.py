@@ -1,12 +1,12 @@
-
 import streamlit as st
 import pytesseract
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw
 import io
 import base64
 from scipy import ndimage
+from streamlit_drawable_canvas import st_canvas
 
 # Page configuration
 st.set_page_config(
@@ -47,6 +47,13 @@ st.markdown("""
     background-color: #f0f2f6;
     padding: 10px;
     border-radius: 5px;
+    margin: 10px 0;
+}
+.selection-info {
+    background-color: #fff3cd;
+    border: 1px solid #ffeaa7;
+    border-radius: 5px;
+    padding: 10px;
     margin: 10px 0;
 }
 </style>
@@ -113,6 +120,38 @@ def get_ocr_config(mode, language):
     }
     return configs.get(mode, configs['handwriting'])
 
+def crop_image_from_canvas(original_image, canvas_result):
+    """Extract cropped region from canvas selection"""
+    if canvas_result.json_data is None or len(canvas_result.json_data["objects"]) == 0:
+        return None, None
+    
+    # Get the rectangle from canvas
+    rect = canvas_result.json_data["objects"][0]
+    if rect["type"] != "rect":
+        return None, None
+    
+    # Get original image dimensions
+    orig_width, orig_height = original_image.size
+    
+    # Get canvas dimensions (we'll scale the selection)
+    canvas_width = 600  # Fixed canvas width
+    canvas_height = int(600 * orig_height / orig_width) if orig_width > orig_height else 600
+    
+    # Calculate scaling factors
+    scale_x = orig_width / canvas_width
+    scale_y = orig_height / canvas_height
+    
+    # Get rectangle coordinates and scale them
+    left = int(rect["left"] * scale_x)
+    top = int(rect["top"] * scale_y)
+    width = int(rect["width"] * scale_x)
+    height = int(rect["height"] * scale_y)
+    
+    # Crop the original image
+    cropped = original_image.crop((left, top, left + width, top + height))
+    
+    return cropped, (left, top, width, height)
+
 def extract_text_from_image(img, ocr_mode, language, preprocess_mode):
     """Extract text from image using specified parameters"""
     try:
@@ -146,6 +185,7 @@ def multiple_attempts_ocr(img, language):
     preprocess_modes = ['auto', 'high_contrast', 'minimal', 'edge_enhance']
     
     progress_bar = st.progress(0)
+    status_text = st.empty()
     total_attempts = len(modes) * len(preprocess_modes)
     current_attempt = 0
     
@@ -154,18 +194,20 @@ def multiple_attempts_ocr(img, language):
             try:
                 current_attempt += 1
                 progress_bar.progress(current_attempt / total_attempts)
+                status_text.text(f"Trying {ocr_mode} with {prep_mode}... ({current_attempt}/{total_attempts})")
                 
                 processed = preprocess_for_handwriting(img, prep_mode)
                 config = get_ocr_config(ocr_mode, language)
                 text = pytesseract.image_to_string(processed, config=config).strip()
                 
-                if text and text not in results:
+                if text and text not in [r[0] for r in results]:
                     results.append((text, f"{ocr_mode} + {prep_mode}"))
                     
             except Exception as e:
                 continue
     
     progress_bar.empty()
+    status_text.empty()
     return results
 
 # Initialize session state
@@ -175,6 +217,10 @@ if 'processed_image' not in st.session_state:
     st.session_state.processed_image = None
 if 'multi_results' not in st.session_state:
     st.session_state.multi_results = []
+if 'cropped_image' not in st.session_state:
+    st.session_state.cropped_image = None
+if 'selection_coords' not in st.session_state:
+    st.session_state.selection_coords = None
 
 # Main header
 st.markdown('<h1 class="main-header">✍️ Handwriting & Text OCR Extractor</h1>', unsafe_allow_html=True)
@@ -229,146 +275,241 @@ with st.sidebar:
     
     st.markdown("---")
     
+    # Processing options
+    st.subheader("📋 Processing Options")
+    process_full_image = st.radio(
+        "Process:",
+        ["Selected Area Only", "Full Image"],
+        help="Choose whether to process the entire image or just the selected region"
+    )
+    
+    st.markdown("---")
+    
     # Tips section
     st.markdown("""
     <div class="tips-box">
     <h4>💡 Tips for Better Results:</h4>
     <ul>
-    <li>Upload clear, high-contrast images</li>
-    <li>Ensure good lighting</li>
-    <li>Try different modes for difficult text</li>
+    <li><strong>Make tight selections</strong> around handwritten text</li>
+    <li>Ensure good contrast between text and background</li>
+    <li>Try different preprocessing modes if first attempt fails</li>
     <li>Use "Numbers/Measurements" for values like "12.51m"</li>
-    <li>Crop images tightly around text area</li>
+    <li>Use "Multiple Attempts" for difficult handwriting</li>
     </ul>
     </div>
     """, unsafe_allow_html=True)
 
 # Main content area
-col1, col2 = st.columns([1, 1])
+uploaded_file = st.file_uploader(
+    "📤 Choose an image file",
+    type=['png', 'jpg', 'jpeg', 'bmp', 'tiff'],
+    help="Upload an image containing handwritten or printed text"
+)
 
-with col1:
-    st.header("📤 Upload Image")
+if uploaded_file is not None:
+    # Load and display original image
+    original_img = Image.open(uploaded_file)
     
-    uploaded_file = st.file_uploader(
-        "Choose an image file",
-        type=['png', 'jpg', 'jpeg', 'bmp', 'tiff'],
-        help="Upload an image containing handwritten or printed text"
-    )
+    col1, col2 = st.columns([1, 1])
     
-    if uploaded_file is not None:
-        # Display original image
-        img = Image.open(uploaded_file)
-        st.subheader("Original Image")
-        st.image(img, caption=f"Size: {img.size[0]}×{img.size[1]} pixels", use_column_width=True)
+    with col1:
+        st.subheader("🖼️ Select Text Region")
+        st.markdown("**Instructions:** Draw a rectangle around the text you want to extract")
+        
+        # Calculate canvas dimensions maintaining aspect ratio
+        canvas_width = 600
+        canvas_height = int(canvas_width * original_img.height / original_img.width)
+        
+        # Limit height to prevent extremely tall canvases
+        if canvas_height > 800:
+            canvas_height = 800
+            canvas_width = int(canvas_height * original_img.width / original_img.height)
+        
+        # Create drawable canvas
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 165, 0, 0.2)",  # Orange with transparency
+            stroke_width=2,
+            stroke_color="#FF4444",
+            background_color="#FFFFFF",
+            background_image=original_img,
+            update_streamlit=True,
+            width=canvas_width,
+            height=canvas_height,
+            drawing_mode="rect",
+            point_display_radius=0,
+            key="canvas",
+        )
         
         # Action buttons
         st.subheader("🎯 Actions")
         
-        col_btn1, col_btn2 = st.columns(2)
+        col_btn1, col_btn2, col_btn3 = st.columns(3)
         
         with col_btn1:
-            if st.button("✍️ Extract Text", type="primary", use_container_width=True):
-                with st.spinner("Processing image..."):
-                    extracted_text, processed_img = extract_text_from_image(
-                        img, ocr_mode, language, preprocess_mode
-                    )
-                    st.session_state.extracted_text = extracted_text
-                    st.session_state.processed_image = processed_img
-                    st.session_state.multi_results = []
-        
+            extract_btn = st.button("✍️ Extract Text", type="primary", use_container_width=True)
+            
         with col_btn2:
-            if st.button("🔄 Multiple Attempts", use_container_width=True):
-                with st.spinner("Trying multiple approaches..."):
-                    multi_results = multiple_attempts_ocr(img, language)
+            multi_btn = st.button("🔄 Multi-Try", use_container_width=True)
+            
+        with col_btn3:
+            clear_btn = st.button("🗑️ Clear", use_container_width=True)
+        
+        # Clear selection
+        if clear_btn:
+            st.session_state.extracted_text = ""
+            st.session_state.processed_image = None
+            st.session_state.multi_results = []
+            st.session_state.cropped_image = None
+            st.session_state.selection_coords = None
+            st.experimental_rerun()
+    
+    with col2:
+        st.subheader("📊 Results & Preview")
+        
+        # Process image based on selection
+        target_image = original_img
+        processing_type = "Full Image"
+        
+        # Check if there's a selection and user wants to process selected area
+        if (canvas_result.json_data is not None and 
+            len(canvas_result.json_data["objects"]) > 0 and 
+            process_full_image == "Selected Area Only"):
+            
+            cropped_img, coords = crop_image_from_canvas(original_img, canvas_result)
+            if cropped_img is not None:
+                target_image = cropped_img
+                processing_type = "Selected Area"
+                st.session_state.cropped_image = cropped_img
+                st.session_state.selection_coords = coords
+                
+                # Show selection info
+                st.markdown(f"""
+                <div class="selection-info">
+                <strong>📏 Selection Info:</strong><br>
+                Size: {coords[2]}×{coords[3]} pixels<br>
+                Position: ({coords[0]}, {coords[1]})
+                </div>
+                """, unsafe_allow_html=True)
+        
+        # Show current processing target
+        if st.session_state.cropped_image is not None and process_full_image == "Selected Area Only":
+            st.image(st.session_state.cropped_image, caption="Selected Region for Processing", use_column_width=True)
+        
+        # Extract text button action
+        if extract_btn:
+            with st.spinner(f"Processing {processing_type.lower()}..."):
+                extracted_text, processed_img = extract_text_from_image(
+                    target_image, ocr_mode, language, preprocess_mode
+                )
+                st.session_state.extracted_text = extracted_text
+                st.session_state.processed_image = processed_img
+                st.session_state.multi_results = []
+        
+        # Multiple attempts button action
+        if multi_btn:
+            if process_full_image == "Selected Area Only" and st.session_state.cropped_image is None:
+                st.warning("⚠️ Please make a selection first!")
+            else:
+                with st.spinner(f"Trying multiple approaches on {processing_type.lower()}..."):
+                    multi_results = multiple_attempts_ocr(target_image, language)
                     st.session_state.multi_results = multi_results
                     st.session_state.extracted_text = ""
                     st.session_state.processed_image = None
-
-with col2:
-    st.header("📊 Results")
-    
-    # Single extraction results
-    if st.session_state.extracted_text:
-        st.subheader("✅ Extracted Text")
         
-        # Metrics
-        text_length = len(st.session_state.extracted_text)
-        word_count = len(st.session_state.extracted_text.split())
-        
-        col_m1, col_m2 = st.columns(2)
-        col_m1.metric("Characters", text_length)
-        col_m2.metric("Words", word_count)
-        
-        # Text result
-        st.text_area(
-            "Result:",
-            value=st.session_state.extracted_text,
-            height=200,
-            help="Copy this text to use elsewhere"
-        )
-        
-        # Download button
+        # Display results
         if st.session_state.extracted_text:
-            st.download_button(
-                "💾 Download as Text File",
-                data=st.session_state.extracted_text,
-                file_name="extracted_text.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
-    
-    # Multiple attempts results
-    if st.session_state.multi_results:
-        st.subheader("🔄 Multiple Attempt Results")
-        
-        # Find best result (longest non-empty)
-        best_result = ""
-        if st.session_state.multi_results:
-            valid_results = [r[0] for r in st.session_state.multi_results if r[0].strip()]
-            if valid_results:
-                best_result = max(valid_results, key=len)
-        
-        if best_result:
-            st.success(f"🎯 Best Result ({len(best_result)} chars): {best_result}")
+            st.success("✅ Text Extraction Complete!")
             
-            if st.button("📋 Use Best Result", use_container_width=True):
-                st.session_state.extracted_text = best_result
-                st.session_state.multi_results = []
-                st.experimental_rerun()
-        
-        # Show all results
-        with st.expander("View All Attempts", expanded=True):
-            for i, (result, method) in enumerate(st.session_state.multi_results, 1):
-                if result.strip():
-                    st.text(f"Attempt {i} ({method}): {result}")
-                    
-        # Download all results
-        if st.session_state.multi_results:
-            all_results_text = "\n".join([
-                f"Attempt {i} ({method}): {result}"
-                for i, (result, method) in enumerate(st.session_state.multi_results, 1)
-            ])
+            # Metrics
+            text_length = len(st.session_state.extracted_text)
+            word_count = len(st.session_state.extracted_text.split())
+            
+            col_m1, col_m2 = st.columns(2)
+            col_m1.metric("Characters", text_length)
+            col_m2.metric("Words", word_count)
+            
+            # Text result
+            st.text_area(
+                f"Extracted Text ({processing_type}):",
+                value=st.session_state.extracted_text,
+                height=150,
+                help="Copy this text to use elsewhere"
+            )
+            
+            # Download button
             st.download_button(
-                "💾 Download All Results",
-                data=all_results_text,
-                file_name="all_ocr_attempts.txt",
+                "💾 Download Text",
+                data=st.session_state.extracted_text,
+                file_name=f"extracted_text_{processing_type.lower().replace(' ', '_')}.txt",
                 mime="text/plain",
                 use_container_width=True
             )
+        
+        # Multiple attempts results
+        elif st.session_state.multi_results:
+            st.success("🔄 Multiple Attempts Complete!")
+            
+            # Find best result (longest non-empty)
+            best_result = ""
+            if st.session_state.multi_results:
+                valid_results = [r[0] for r in st.session_state.multi_results if r[0].strip()]
+                if valid_results:
+                    best_result = max(valid_results, key=len)
+            
+            if best_result:
+                st.info(f"🎯 Best Result ({len(best_result)} chars): {best_result}")
+                
+                if st.button("📋 Use Best Result", use_container_width=True):
+                    st.session_state.extracted_text = best_result
+                    st.session_state.multi_results = []
+                    st.experimental_rerun()
+            
+            # Show all results in expander
+            with st.expander("View All Attempts", expanded=True):
+                for i, (result, method) in enumerate(st.session_state.multi_results, 1):
+                    if result.strip():
+                        st.text(f"Attempt {i} ({method}): {result}")
+                        
+            # Download all results
+            if st.session_state.multi_results:
+                all_results_text = f"Multiple OCR Attempts - {processing_type}\n" + "="*50 + "\n\n"
+                all_results_text += "\n".join([
+                    f"Attempt {i} ({method}): {result}"
+                    for i, (result, method) in enumerate(st.session_state.multi_results, 1)
+                ])
+                st.download_button(
+                    "💾 Download All Results",
+                    data=all_results_text,
+                    file_name=f"all_ocr_attempts_{processing_type.lower().replace(' ', '_')}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
 
-# Show processed image if available
-if st.session_state.processed_image is not None:
-    st.header("🔧 Processed Image")
-    col_proc1, col_proc2 = st.columns(2)
-    
-    with col_proc1:
-        st.subheader("Before Processing")
-        if uploaded_file is not None:
-            st.image(Image.open(uploaded_file), use_column_width=True)
-    
-    with col_proc2:
-        st.subheader("After Processing")
-        st.image(st.session_state.processed_image, use_column_width=True)
+    # Show processed image if available
+    if st.session_state.processed_image is not None:
+        st.markdown("---")
+        st.subheader("🔧 Image Processing Preview")
+        
+        col_proc1, col_proc2 = st.columns(2)
+        
+        with col_proc1:
+            st.subheader("Before Processing")
+            display_img = st.session_state.cropped_image if st.session_state.cropped_image is not None else original_img
+            st.image(display_img, use_column_width=True)
+        
+        with col_proc2:
+            st.subheader("After Processing")
+            st.image(st.session_state.processed_image, use_column_width=True)
+
+else:
+    # Welcome screen when no image is uploaded
+    st.markdown("""
+    <div style='text-align: center; padding: 50px; background-color: #f8f9fa; border-radius: 10px; margin: 20px 0;'>
+    <h3>👋 Welcome to Handwriting OCR Extractor!</h3>
+    <p>Upload an image to get started with text extraction</p>
+    <p>📝 Perfect for handwritten notes, measurements, and mixed text</p>
+    </div>
+    """, unsafe_allow_html=True)
 
 # Footer information
 st.markdown("---")
@@ -379,14 +520,14 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Instructions for setup (shown in expander)
-with st.expander("📋 Setup Instructions"):
+# Setup instructions
+with st.expander("📋 Setup Instructions & Dependencies"):
     st.markdown("""
     ### Required Dependencies
     
     Install the following packages:
     ```bash
-    pip install streamlit pytesseract pillow opencv-python numpy scipy scikit-image
+    pip install streamlit pytesseract pillow opencv-python numpy scipy scikit-image streamlit-drawable-canvas
     ```
     
     ### Tesseract Installation
@@ -409,4 +550,12 @@ with st.expander("📋 Setup Instructions"):
     ```bash
     streamlit run app.py
     ```
+    
+    ### Features
+    - 🖱️ **Interactive Selection**: Draw rectangles to select specific text regions
+    - 🔄 **Multiple OCR Modes**: Optimized for different text types
+    - 🎨 **Image Preprocessing**: 5 different enhancement modes
+    - 🌐 **Multi-language Support**: 7 language combinations
+    - 📊 **Detailed Results**: Character/word counts and processing previews
+    - 💾 **Export Options**: Download extracted text and results
     """)
