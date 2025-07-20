@@ -132,6 +132,14 @@ def get_ocr_config(mode, language):
 
 def crop_image_from_canvas(original_image, canvas_result):
     """Extract cropped region from canvas selection"""
+    if canvas_result is None:
+        # Check for manual coordinates fallback
+        if hasattr(st.session_state, 'manual_coords'):
+            left, top, width, height = st.session_state.manual_coords
+            cropped = original_image.crop((left, top, left + width, top + height))
+            return cropped, (left, top, width, height)
+        return None, None
+    
     if canvas_result.json_data is None or len(canvas_result.json_data["objects"]) == 0:
         return None, None
     
@@ -239,6 +247,8 @@ if 'selection_coords' not in st.session_state:
     st.session_state.selection_coords = None
 if 'canvas_key' not in st.session_state:
     st.session_state.canvas_key = 0
+if 'manual_coords' not in st.session_state:
+    st.session_state.manual_coords = None
 
 # Main header
 st.markdown('<h1 class="main-header">✍️ Handwriting & Text OCR Extractor</h1>', unsafe_allow_html=True)
@@ -344,15 +354,17 @@ if uploaded_file is not None:
             canvas_width = int(canvas_height * original_img.width / original_img.height)
         
         try:
-            # Create drawable canvas with base64 background image
-            background_image_url = image_to_base64_url(original_img)
+            # Resize image for canvas while maintaining aspect ratio
+            canvas_img = original_img.copy()
+            canvas_img.thumbnail((canvas_width, canvas_height), Image.Resampling.LANCZOS)
             
+            # Create drawable canvas with PIL image
             canvas_result = st_canvas(
                 fill_color="rgba(255, 165, 0, 0.2)",  # Orange with transparency
                 stroke_width=2,
                 stroke_color="#FF4444",
                 background_color="#FFFFFF",
-                background_image=background_image_url,
+                background_image=canvas_img,
                 update_streamlit=True,
                 width=canvas_width,
                 height=canvas_height,
@@ -365,6 +377,24 @@ if uploaded_file is not None:
             st.info("Fallback: Using image display without canvas selection")
             canvas_result = None
             st.image(original_img, width=canvas_width, caption="Original Image")
+            
+            # Simple coordinate input fallback
+            st.subheader("Manual Selection (Fallback)")
+            col_x1, col_y1 = st.columns(2)
+            col_x2, col_y2 = st.columns(2)
+            
+            with col_x1:
+                x1 = st.number_input("Left (x1)", min_value=0, max_value=original_img.width-1, value=0)
+            with col_y1:
+                y1 = st.number_input("Top (y1)", min_value=0, max_value=original_img.height-1, value=0)
+            with col_x2:
+                x2 = st.number_input("Right (x2)", min_value=x1+1, max_value=original_img.width, value=min(200, original_img.width))
+            with col_y2:
+                y2 = st.number_input("Bottom (y2)", min_value=y1+1, max_value=original_img.height, value=min(100, original_img.height))
+            
+            # Create mock canvas result for fallback
+            if st.button("Apply Manual Selection"):
+                st.session_state.manual_coords = (x1, y1, x2-x1, y2-y1)
         
         # Action buttons
         st.subheader("🎯 Actions")
@@ -387,6 +417,7 @@ if uploaded_file is not None:
             st.session_state.multi_results = []
             st.session_state.cropped_image = None
             st.session_state.selection_coords = None
+            st.session_state.manual_coords = None
             st.session_state.canvas_key += 1
             st.rerun()
     
@@ -398,9 +429,10 @@ if uploaded_file is not None:
         processing_type = "Full Image"
         
         # Check if there's a selection and user wants to process selected area
-        if (canvas_result is not None and
-            canvas_result.json_data is not None and 
-            len(canvas_result.json_data["objects"]) > 0 and 
+        if (((canvas_result is not None and
+              canvas_result.json_data is not None and 
+              len(canvas_result.json_data["objects"]) > 0) or
+             st.session_state.manual_coords is not None) and 
             process_full_image == "Selected Area Only"):
             
             cropped_img, coords = crop_image_from_canvas(original_img, canvas_result)
@@ -435,7 +467,9 @@ if uploaded_file is not None:
         
         # Multiple attempts button action
         if multi_btn:
-            if process_full_image == "Selected Area Only" and st.session_state.cropped_image is None:
+            if (process_full_image == "Selected Area Only" and 
+                st.session_state.cropped_image is None and 
+                st.session_state.manual_coords is None):
                 st.warning("⚠️ Please make a selection first!")
             else:
                 with st.spinner(f"Trying multiple approaches on {processing_type.lower()}..."):
