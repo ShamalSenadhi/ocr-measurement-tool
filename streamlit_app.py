@@ -1,5 +1,5 @@
 import streamlit as st
-import easyocr 
+import pytesseract
 import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
