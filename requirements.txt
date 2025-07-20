@@ -1,7 +1,7 @@
 pytesseract
-streamlit-drawable
-streamlit-drawable-canvas
 streamlit
+streamlit-drawable-canvas
+
 Pillow
 opencv-python-headless
 numpy
