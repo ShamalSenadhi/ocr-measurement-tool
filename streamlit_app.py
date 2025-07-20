@@ -9,9 +9,9 @@ import re
 import io
 import base64
 
-# Configure page
+# Set page configuration
 st.set_page_config(
-    page_title="📏 OCR Measurement Extractor",
+    page_title="📏 Measurement & Cable Text OCR Extractor",
     page_icon="📏",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -22,25 +22,41 @@ st.markdown("""
 <style>
     .main-header {
         background: linear-gradient(135deg, #1e3c72, #2a5298);
-        padding: 2rem;
+        padding: 20px;
         border-radius: 10px;
-        margin-bottom: 2rem;
+        margin-bottom: 20px;
         color: white;
         text-align: center;
     }
     .result-box {
         background: linear-gradient(135deg, #e3f2fd, #bbdefb);
         border-left: 5px solid #2196f3;
-        padding: 1rem;
+        padding: 15px;
+        margin-top: 15px;
         border-radius: 5px;
-        margin: 1rem 0;
     }
-    .tip-box {
+    .tips-box {
         background: rgba(30, 60, 114, 0.1);
         border: 1px solid rgba(30, 60, 114, 0.2);
-        padding: 1rem;
+        padding: 15px;
+        margin-top: 20px;
         border-radius: 8px;
-        margin: 1rem 0;
+    }
+    .measurement-item {
+        background: white;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 5px 0;
+        border-left: 4px solid #2a5298;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        border: none;
+        padding: 0.5rem 1rem;
+        font-weight: 600;
+        transition: all 0.3s ease;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -106,7 +122,7 @@ def get_measurement_config(mode, language):
 def extract_measurement_values(text):
     """Extract measurement values from OCR text using regex patterns"""
     measurements = []
-    
+
     # Patterns for different measurement formats
     patterns = [
         r'(\d+\.?\d*)\s*m(?:\s|$)',  # "645m", "12.5m", "155 m"
@@ -124,16 +140,19 @@ def extract_measurement_values(text):
             if len(match.groups()) == 2:  # Range pattern
                 measurements.append(f"{match.group(1)}-{match.group(2)}")
             else:
-                # Extract the unit from the original match
-                full_match = match.group(0).strip()
-                measurements.append(full_match)
+                # Extract the unit from the pattern itself
+                unit_match = re.search(r'm(?:m)?|cm|km|ft|in', pattern)
+                unit = unit_match.group(0) if unit_match else ""
+                measurements.append(f"{match.group(1)}{unit}")
 
     # Also look for standalone numbers that might be measurements
-    if not measurements:  # Only if no clear measurements found
-        standalone_numbers = re.findall(r'(?<![a-zA-Z])(\d+\.?\d+)(?![a-zA-Z])', text)
-        for num in standalone_numbers:
+    standalone_numbers = re.findall(r'(?<![a-zA-Z])(\d+\.?\d+)(?![a-zA-Z])', text)
+    for num in standalone_numbers:
+        try:
             if float(num) > 1 and float(num) < 10000:  # Reasonable measurement range
                 measurements.append(f"{num} (unit unknown)")
+        except ValueError:
+            continue
 
     return list(set(measurements))  # Remove duplicates
 
@@ -167,197 +186,285 @@ def extract_measurements(img, detection_mode='measurement', language='eng', enha
 
 def smart_measurement_extract(img, language='eng'):
     """Smart extraction that tries multiple approaches and combines results"""
-    all_measurements = []
-    processing_details = []
-    
-    # Try different combinations of modes and enhancements
-    combinations = [
-        ('measurement', 'handwriting'),
-        ('measurement', 'cable_optimized'),
-        ('cable_text', 'cable_optimized'),
-        ('both', 'auto'),
-        ('numbers_only', 'high_contrast')
-    ]
-    
-    for detection_mode, enhance_mode in combinations:
-        try:
-            processed_img = enhance_for_measurements(img, enhance_mode)
-            config = get_measurement_config(detection_mode, language)
-            text = pytesseract.image_to_string(processed_img, config=config).strip()
-            
-            if text:
-                measurements = extract_measurement_values(text)
-                if measurements:
-                    all_measurements.extend(measurements)
-                    processing_details.append(f"✅ {detection_mode} + {enhance_mode}: {', '.join(measurements)}")
-                else:
-                    processing_details.append(f"📝 {detection_mode} + {enhance_mode}: '{text}'")
-                    
-        except Exception as e:
-            processing_details.append(f"❌ {detection_mode} + {enhance_mode}: {str(e)}")
-            continue
-    
-    # Remove duplicates
-    unique_measurements = list(set(all_measurements))
-    
-    return unique_measurements, processing_details
+    try:
+        all_measurements = []
+        processing_details = []
+        
+        # Try different combinations of modes and enhancements
+        combinations = [
+            ('measurement', 'handwriting'),
+            ('measurement', 'cable_optimized'),
+            ('cable_text', 'cable_optimized'),
+            ('both', 'auto'),
+            ('numbers_only', 'high_contrast')
+        ]
+        
+        for detection_mode, enhance_mode in combinations:
+            try:
+                processed_img = enhance_for_measurements(img, enhance_mode)
+                config = get_measurement_config(detection_mode, language)
+                text = pytesseract.image_to_string(processed_img, config=config).strip()
+                
+                if text:
+                    measurements = extract_measurement_values(text)
+                    if measurements:
+                        all_measurements.extend(measurements)
+                        processing_details.append({
+                            'mode': f"{detection_mode} + {enhance_mode}",
+                            'status': 'success',
+                            'result': ', '.join(measurements)
+                        })
+                    else:
+                        processing_details.append({
+                            'mode': f"{detection_mode} + {enhance_mode}",
+                            'status': 'text_only',
+                            'result': text
+                        })
+                        
+            except Exception as e:
+                processing_details.append({
+                    'mode': f"{detection_mode} + {enhance_mode}",
+                    'status': 'error',
+                    'result': str(e)
+                })
+                continue
+        
+        # Remove duplicates
+        unique_measurements = list(set(all_measurements))
+        
+        return unique_measurements, processing_details
+        
+    except Exception as e:
+        st.error(f"Smart extraction error: {str(e)}")
+        return [], []
 
-# Main App
+def crop_image(img, crop_coords):
+    """Crop image based on coordinates"""
+    if crop_coords:
+        x1, y1, x2, y2 = crop_coords
+        return img.crop((min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)))
+    return img
+
 def main():
     # Header
     st.markdown("""
     <div class="main-header">
-        <h1>📏 OCR Measurement & Cable Text Extractor</h1>
+        <h1>📏 Measurement & Cable Text OCR Extractor</h1>
         <p>Extract handwritten measurements from paper labels AND printed text from cables/wires</p>
     </div>
     """, unsafe_allow_html=True)
-
-    # Sidebar Configuration
-    st.sidebar.header("🔧 Configuration")
     
-    detection_mode = st.sidebar.selectbox(
-        "🎯 Detection Mode",
-        ["measurement", "cable_text", "both", "numbers_only"],
-        format_func=lambda x: {
-            "measurement": "📏 Measurement Labels",
-            "cable_text": "🔌 Cable/Wire Text", 
-            "both": "🔀 Both Labels & Cable Text",
-            "numbers_only": "🔢 Numbers Only"
-        }[x]
+    # Sidebar controls
+    st.sidebar.header("🎯 Configuration")
+    
+    # File upload
+    uploaded_file = st.sidebar.file_uploader(
+        "📁 Upload Image",
+        type=['png', 'jpg', 'jpeg', 'bmp', 'tiff'],
+        help="Upload an image containing measurements or cable text"
     )
     
-    language = st.sidebar.selectbox(
-        "🌐 Language",
-        ["eng", "eng+ara", "eng+chi_sim", "eng+fra", "eng+deu"],
-        format_func=lambda x: {
-            "eng": "English",
-            "eng+ara": "English + Arabic",
-            "eng+chi_sim": "English + Chinese", 
-            "eng+fra": "English + French",
-            "eng+deu": "English + German"
-        }[x]
-    )
-    
-    enhance_mode = st.sidebar.selectbox(
-        "🔧 Enhancement Mode",
-        ["auto", "high_contrast", "cable_optimized", "handwriting", "minimal"],
-        format_func=lambda x: {
-            "auto": "🤖 Auto Enhance",
-            "high_contrast": "⚡ High Contrast",
-            "cable_optimized": "🔌 Cable Text Optimized",
-            "handwriting": "✍️ Handwriting Optimized", 
-            "minimal": "🎯 Minimal Processing"
-        }[x]
-    )
-
-    # Tips section
-    with st.sidebar.expander("💡 Tips for Best Results"):
-        st.markdown("""
-        **Paper Labels:**
-        - Select tight crops around handwritten measurements (like "645m", "155m")
+    if uploaded_file is not None:
+        # Load image
+        img = Image.open(uploaded_file)
         
-        **Cable Text:**
-        - Crop close to printed text on black cables/wires
-        
-        **Smart Extract:**
-        - Automatically finds and extracts all measurements
-        
-        **Good Images:**
-        - Ensure clear contrast between text and background
-        - Good lighting without shadows
-        - Sharp focus
-        """)
-
-    # Main content
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        st.header("📤 Upload Image")
-        uploaded_file = st.file_uploader(
-            "Choose an image file",
-            type=['png', 'jpg', 'jpeg'],
-            help="Upload images containing measurements or cable text"
+        # Sidebar settings
+        detection_mode = st.sidebar.selectbox(
+            "🎯 Detection Mode",
+            ['measurement', 'cable_text', 'both', 'numbers_only'],
+            format_func=lambda x: {
+                'measurement': '📏 Measurement Labels',
+                'cable_text': '🔌 Cable/Wire Text',
+                'both': '🔀 Both Labels & Cable Text',
+                'numbers_only': '🔢 Numbers Only'
+            }[x]
         )
         
-        if uploaded_file:
-            image = Image.open(uploaded_file)
-            st.image(image, caption="Original Image", use_column_width=True)
-            
-            # Processing buttons
-            st.header("🚀 Processing Options")
-            
-            col1a, col1b = st.columns(2)
-            
-            with col1a:
-                if st.button("📏 Extract Measurements", type="primary"):
-                    with st.spinner("Processing image..."):
-                        measurements, raw_text, processed_img = extract_measurements(
-                            image, detection_mode, language, enhance_mode
-                        )
-                        
-                        st.session_state['measurements'] = measurements
-                        st.session_state['raw_text'] = raw_text
-                        st.session_state['processed_img'] = processed_img
-                        st.session_state['processing_type'] = 'standard'
-            
-            with col1b:
-                if st.button("🧠 Smart Auto-Extract"):
-                    with st.spinner("Smart extraction in progress..."):
-                        measurements, details = smart_measurement_extract(image, language)
-                        
-                        st.session_state['measurements'] = measurements
-                        st.session_state['processing_details'] = details
-                        st.session_state['processing_type'] = 'smart'
-
-    with col2:
-        st.header("📊 Results")
+        language = st.sidebar.selectbox(
+            "🌐 Language",
+            ['eng', 'eng+ara', 'eng+chi_sim', 'eng+fra', 'eng+deu'],
+            format_func=lambda x: {
+                'eng': 'English',
+                'eng+ara': 'English + Arabic',
+                'eng+chi_sim': 'English + Chinese',
+                'eng+fra': 'English + French',
+                'eng+deu': 'English + German'
+            }[x]
+        )
         
-        # Display results if available
-        if 'measurements' in st.session_state:
-            measurements = st.session_state['measurements']
+        enhance_mode = st.sidebar.selectbox(
+            "🔧 Enhancement",
+            ['auto', 'high_contrast', 'cable_optimized', 'handwriting', 'minimal'],
+            format_func=lambda x: {
+                'auto': '🤖 Auto Enhance',
+                'high_contrast': '⚡ High Contrast',
+                'cable_optimized': '🔌 Cable Text Optimized',
+                'handwriting': '✍️ Handwriting Optimized',
+                'minimal': '🎯 Minimal Processing'
+            }[x]
+        )
+        
+        # Main content area
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            st.subheader("📸 Original Image")
+            st.image(img, caption=f"Size: {img.size[0]}x{img.size[1]} pixels", use_column_width=True)
             
-            if measurements:
-                st.markdown('<div class="result-box">', unsafe_allow_html=True)
-                st.success("📏 Extracted Measurements:")
-                for measurement in measurements:
-                    st.write(f"• {measurement}")
-                st.markdown('</div>', unsafe_allow_html=True)
+            # Image cropping option
+            if st.checkbox("✂️ Enable Manual Cropping"):
+                st.info("Use the slider below to define crop area (as percentages)")
                 
-                # Copy button
-                measurements_text = "\n".join([f"• {m}" for m in measurements])
-                st.code(measurements_text, language=None)
+                crop_left = st.slider("Left %", 0, 100, 0) / 100
+                crop_top = st.slider("Top %", 0, 100, 0) / 100
+                crop_right = st.slider("Right %", 0, 100, 100) / 100
+                crop_bottom = st.slider("Bottom %", 0, 100, 100) / 100
                 
+                # Calculate crop coordinates
+                w, h = img.size
+                crop_coords = (
+                    int(crop_left * w),
+                    int(crop_top * h),
+                    int(crop_right * w),
+                    int(crop_bottom * h)
+                )
+                
+                # Show cropped preview
+                cropped_img = crop_image(img, crop_coords)
+                st.image(cropped_img, caption="Cropped Preview", width=300)
             else:
-                st.warning("No measurements detected")
+                cropped_img = img
+                crop_coords = None
+        
+        with col2:
+            st.subheader("🔧 Processing Options")
             
-            # Show processing details for smart extraction
-            if st.session_state.get('processing_type') == 'smart' and 'processing_details' in st.session_state:
-                st.subheader("🔍 Processing Details")
-                for detail in st.session_state['processing_details']:
-                    st.text(detail)
+            # Process buttons
+            if st.button("📏 Extract Measurements", type="primary"):
+                with st.spinner("🔄 Processing image..."):
+                    measurements, raw_text, processed_img = extract_measurements(
+                        cropped_img, detection_mode, language, enhance_mode
+                    )
+                    
+                    # Store results in session state
+                    st.session_state['measurements'] = measurements
+                    st.session_state['raw_text'] = raw_text
+                    st.session_state['processed_img'] = processed_img
             
-            # Show raw text and processed image for standard extraction
-            elif st.session_state.get('processing_type') == 'standard':
-                if 'raw_text' in st.session_state:
-                    st.subheader("📝 Raw OCR Text")
-                    st.code(st.session_state['raw_text'])
+            if st.button("🧠 Smart Auto-Extract", type="secondary"):
+                with st.spinner("🧠 Smart extraction in progress..."):
+                    measurements, details = smart_measurement_extract(cropped_img, language)
+                    
+                    # Store results in session state
+                    st.session_state['smart_measurements'] = measurements
+                    st.session_state['smart_details'] = details
+        
+        # Display results
+        if 'measurements' in st.session_state or 'smart_measurements' in st.session_state:
+            st.markdown("---")
+            
+            # Regular extraction results
+            if 'measurements' in st.session_state:
+                st.subheader("📏 Extraction Results")
                 
-                if 'processed_img' in st.session_state and st.session_state['processed_img']:
-                    st.subheader("🔧 Processed Image")
-                    st.image(st.session_state['processed_img'], caption="Enhanced for OCR")
-
-    # Additional info
+                measurements = st.session_state['measurements']
+                raw_text = st.session_state['raw_text']
+                processed_img = st.session_state['processed_img']
+                
+                if measurements:
+                    st.markdown('<div class="result-box">', unsafe_allow_html=True)
+                    st.success(f"✅ Found {len(measurements)} measurements:")
+                    
+                    for i, measurement in enumerate(measurements, 1):
+                        st.markdown(f'<div class="measurement-item">• {measurement}</div>', 
+                                  unsafe_allow_html=True)
+                    
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    # Copy to clipboard button
+                    measurements_text = "\n".join([f"• {m}" for m in measurements])
+                    st.text_area("📋 Copy Results:", measurements_text, height=100)
+                else:
+                    st.warning("No measurements detected")
+                
+                # Show raw text and processed image
+                with st.expander("🔍 View Details"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.text_area("Raw OCR Text:", raw_text, height=100)
+                    with col2:
+                        if processed_img:
+                            st.image(processed_img, caption="Processed Image", width=300)
+            
+            # Smart extraction results
+            if 'smart_measurements' in st.session_state:
+                st.subheader("🧠 Smart Extraction Results")
+                
+                measurements = st.session_state['smart_measurements']
+                details = st.session_state['smart_details']
+                
+                if measurements:
+                    st.markdown('<div class="result-box">', unsafe_allow_html=True)
+                    st.success(f"✅ Smart extraction found {len(measurements)} unique measurements:")
+                    
+                    for i, measurement in enumerate(measurements, 1):
+                        st.markdown(f'<div class="measurement-item">• {measurement}</div>', 
+                                  unsafe_allow_html=True)
+                    
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    # Copy to clipboard button
+                    measurements_text = "\n".join([f"• {m}" for m in measurements])
+                    st.text_area("📋 Copy Smart Results:", measurements_text, height=100)
+                else:
+                    st.warning("No clear measurements detected")
+                
+                # Show processing details
+                with st.expander("📊 Processing Details"):
+                    for detail in details:
+                        status_icon = {
+                            'success': '✅',
+                            'text_only': '📝',
+                            'error': '❌'
+                        }.get(detail['status'], '❓')
+                        
+                        st.write(f"{status_icon} **{detail['mode']}**: {detail['result']}")
+    
+    else:
+        # Instructions when no image is uploaded
+        st.info("👆 Please upload an image to get started")
+    
+    # Tips section
+    st.markdown("---")
     st.markdown("""
-    <div class="tip-box">
-    <h4>📋 How to Use:</h4>
-    <ol>
-        <li><strong>Upload Image:</strong> Choose a photo containing measurements or cable text</li>
-        <li><strong>Configure Settings:</strong> Select appropriate detection mode and enhancement</li>
-        <li><strong>Extract:</strong> Use "Extract Measurements" for targeted extraction or "Smart Auto-Extract" for automatic detection</li>
-        <li><strong>Review Results:</strong> Check extracted measurements and copy them as needed</li>
-    </ol>
+    <div class="tips-box">
+        <h4>💡 Tips for Best Results:</h4>
+        <ul>
+            <li><strong>Paper Labels:</strong> Use tight crops around handwritten measurements (like "645m", "155m")</li>
+            <li><strong>Cable Text:</strong> Crop close to printed text on black cables/wires</li>
+            <li><strong>Smart Extract:</strong> Automatically finds and extracts all measurements in the image</li>
+            <li><strong>Both Mode:</strong> Detects both handwritten labels AND cable markings</li>
+            <li><strong>Good Lighting:</strong> Ensure clear contrast between text and background</li>
+            <li><strong>Manual Cropping:</strong> Use the cropping feature to focus on specific areas</li>
+        </ul>
     </div>
     """, unsafe_allow_html=True)
+    
+    # Installation note
+    st.markdown("---")
+    st.markdown("""
+    **📋 Required Installation:**
+    ```bash
+    pip install streamlit pytesseract pillow opencv-python numpy scipy scikit-image
+    
+    # For Ubuntu/Debian:
+    sudo apt install tesseract-ocr tesseract-ocr-eng
+    
+    # For Windows: Download Tesseract from https://github.com/UB-Mannheim/tesseract/wiki
+    # For macOS: brew install tesseract
+    ```
+    """)
 
 if __name__ == "__main__":
     main()
+
