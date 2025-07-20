@@ -59,6 +59,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def image_to_base64_url(img):
+    """Convert PIL image to base64 data URL for canvas background"""
+    buffered = io.BytesIO()
+    # Ensure image is in RGB mode
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    img.save(buffered, format="JPEG", quality=85)
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    return f"data:image/jpeg;base64,{img_str}"
+
 def preprocess_for_handwriting(img, mode='auto'):
     """Apply specialized preprocessing for handwriting recognition"""
     # Convert PIL to OpenCV format
@@ -147,6 +157,12 @@ def crop_image_from_canvas(original_image, canvas_result):
     width = int(rect["width"] * scale_x)
     height = int(rect["height"] * scale_y)
     
+    # Ensure coordinates are within image bounds
+    left = max(0, min(left, orig_width - 1))
+    top = max(0, min(top, orig_height - 1))
+    width = min(width, orig_width - left)
+    height = min(height, orig_height - top)
+    
     # Crop the original image
     cropped = original_image.crop((left, top, left + width, top + height))
     
@@ -221,6 +237,8 @@ if 'cropped_image' not in st.session_state:
     st.session_state.cropped_image = None
 if 'selection_coords' not in st.session_state:
     st.session_state.selection_coords = None
+if 'canvas_key' not in st.session_state:
+    st.session_state.canvas_key = 0
 
 # Main header
 st.markdown('<h1 class="main-header">✍️ Handwriting & Text OCR Extractor</h1>', unsafe_allow_html=True)
@@ -325,20 +343,28 @@ if uploaded_file is not None:
             canvas_height = 800
             canvas_width = int(canvas_height * original_img.width / original_img.height)
         
-        # Create drawable canvas
-        canvas_result = st_canvas(
-            fill_color="rgba(255, 165, 0, 0.2)",  # Orange with transparency
-            stroke_width=2,
-            stroke_color="#FF4444",
-            background_color="#FFFFFF",
-            background_image=original_img,
-            update_streamlit=True,
-            width=canvas_width,
-            height=canvas_height,
-            drawing_mode="rect",
-            point_display_radius=0,
-            key="canvas",
-        )
+        try:
+            # Create drawable canvas with base64 background image
+            background_image_url = image_to_base64_url(original_img)
+            
+            canvas_result = st_canvas(
+                fill_color="rgba(255, 165, 0, 0.2)",  # Orange with transparency
+                stroke_width=2,
+                stroke_color="#FF4444",
+                background_color="#FFFFFF",
+                background_image=background_image_url,
+                update_streamlit=True,
+                width=canvas_width,
+                height=canvas_height,
+                drawing_mode="rect",
+                point_display_radius=0,
+                key=f"canvas_{st.session_state.canvas_key}",
+            )
+        except Exception as e:
+            st.error(f"Canvas error: {str(e)}")
+            st.info("Fallback: Using image display without canvas selection")
+            canvas_result = None
+            st.image(original_img, width=canvas_width, caption="Original Image")
         
         # Action buttons
         st.subheader("🎯 Actions")
@@ -361,7 +387,8 @@ if uploaded_file is not None:
             st.session_state.multi_results = []
             st.session_state.cropped_image = None
             st.session_state.selection_coords = None
-            st.experimental_rerun()
+            st.session_state.canvas_key += 1
+            st.rerun()
     
     with col2:
         st.subheader("📊 Results & Preview")
@@ -371,7 +398,8 @@ if uploaded_file is not None:
         processing_type = "Full Image"
         
         # Check if there's a selection and user wants to process selected area
-        if (canvas_result.json_data is not None and 
+        if (canvas_result is not None and
+            canvas_result.json_data is not None and 
             len(canvas_result.json_data["objects"]) > 0 and 
             process_full_image == "Selected Area Only"):
             
@@ -462,7 +490,7 @@ if uploaded_file is not None:
                 if st.button("📋 Use Best Result", use_container_width=True):
                     st.session_state.extracted_text = best_result
                     st.session_state.multi_results = []
-                    st.experimental_rerun()
+                    st.rerun()
             
             # Show all results in expander
             with st.expander("View All Attempts", expanded=True):
@@ -548,7 +576,7 @@ with st.expander("📋 Setup Instructions & Dependencies"):
     
     ### Running the App
     ```bash
-    streamlit run app.py
+    streamlit run streamlit_app.py
     ```
     
     ### Features
@@ -558,4 +586,9 @@ with st.expander("📋 Setup Instructions & Dependencies"):
     - 🌐 **Multi-language Support**: 7 language combinations
     - 📊 **Detailed Results**: Character/word counts and processing previews
     - 💾 **Export Options**: Download extracted text and results
+    
+    ### Troubleshooting
+    - If canvas doesn't work, the app will fall back to simple image display
+    - Make sure Tesseract is properly installed and in your PATH
+    - For better handwriting recognition, try different preprocessing modes
     """)
