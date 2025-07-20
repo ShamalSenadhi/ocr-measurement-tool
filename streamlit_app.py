@@ -8,7 +8,6 @@ from skimage import morphology
 import re
 import io
 import base64
-from streamlit_drawable_canvas import st_canvas
 
 # Set page configuration
 st.set_page_config(
@@ -239,42 +238,43 @@ def smart_measurement_extract(img, language='eng'):
         st.error(f"Smart extraction error: {str(e)}")
         return [], []
 
-def crop_image_from_canvas(img, canvas_result):
-    """Crop image based on canvas selection"""
-    if canvas_result.json_data is None:
-        return img, None
+def create_manual_selection_interface(img):
+    """Create a manual selection interface using click coordinates"""
+    st.info("Click on the image to define crop boundaries (click to set top-left, then bottom-right)")
     
-    objects = canvas_result.json_data["objects"]
-    if not objects:
-        return img, None
+    # Display the image and get click coordinates
+    col1, col2 = st.columns([2, 1])
     
-    # Get the last drawn rectangle
-    rect = None
-    for obj in reversed(objects):
-        if obj["type"] == "rect":
-            rect = obj
-            break
+    with col1:
+        # Show the image
+        st.image(img, caption="Click to select crop area", use_column_width=True)
     
-    if rect is None:
-        return img, None
+    with col2:
+        st.write("**Manual Crop Selection:**")
+        
+        # Manual coordinate input
+        img_width, img_height = img.size
+        
+        x1 = st.number_input("Left (X1)", 0, img_width, 0, step=1)
+        y1 = st.number_input("Top (Y1)", 0, img_height, 0, step=1)
+        x2 = st.number_input("Right (X2)", 0, img_width, img_width, step=1)
+        y2 = st.number_input("Bottom (Y2)", 0, img_height, img_height, step=1)
+        
+        # Validate coordinates
+        if x2 <= x1:
+            x2 = x1 + 100
+        if y2 <= y1:
+            y2 = y1 + 100
+            
+        # Show selection info
+        st.write(f"Selection: {x2-x1} × {y2-y1} pixels")
+        
+        if st.button("Preview Selection"):
+            cropped_img = img.crop((x1, y1, x2, y2))
+            st.image(cropped_img, caption="Preview", width=200)
+            return cropped_img
     
-    # Extract coordinates
-    left = int(rect["left"])
-    top = int(rect["top"])
-    width = int(rect["width"])
-    height = int(rect["height"])
-    
-    # Calculate crop coordinates
-    x1 = max(0, left)
-    y1 = max(0, top)
-    x2 = min(img.size[0], left + width)
-    y2 = min(img.size[1], top + height)
-    
-    # Crop the image
-    cropped_img = img.crop((x1, y1, x2, y2))
-    crop_info = f"Cropped area: ({x1}, {y1}) to ({x2}, {y2}) - Size: {x2-x1}x{y2-y1}"
-    
-    return cropped_img, crop_info
+    return img.crop((x1, y1, x2, y2))
 
 def main():
     # Header
@@ -344,82 +344,17 @@ def main():
             # Selection mode options
             selection_mode = st.radio(
                 "🎯 Selection Mode:",
-                ["full_image", "manual_selection", "slider_crop"],
+                ["full_image", "manual_coords", "slider_crop"],
                 format_func=lambda x: {
                     "full_image": "📄 Process Full Image",
-                    "manual_selection": "✂️ Draw Selection Box",
-                    "slider_crop": "📐 Slider-based Crop"
+                    "manual_coords": "📐 Manual Coordinates",
+                    "slider_crop": "📏 Slider-based Crop"
                 }[x],
                 horizontal=True
             )
             
-            if selection_mode == "manual_selection":
-                st.info("👆 Draw a rectangle on the image to select the area for OCR processing")
-                
-                # Calculate display size to fit the container
-                max_width = 600
-                max_height = 400
-                img_width, img_height = img.size
-                
-                # Calculate scaling to fit within max dimensions
-                scale = min(max_width / img_width, max_height / img_height, 1.0)
-                display_width = int(img_width * scale)
-                display_height = int(img_height * scale)
-                
-                # Create canvas for selection
-                canvas_result = st_canvas(
-                    fill_color="rgba(255, 0, 0, 0.1)",  # Transparent red fill
-                    stroke_width=2,
-                    stroke_color="#FF0000",  # Red border
-                    background_image=img,
-                    width=display_width,
-                    height=display_height,
-                    drawing_mode="rect",
-                    key="canvas",
-                    display_toolbar=True
-                )
-                
-                # Process the selection
-                if canvas_result.json_data is not None:
-                    objects = canvas_result.json_data["objects"]
-                    if objects:
-                        # Scale coordinates back to original image size
-                        scale_x = img_width / display_width
-                        scale_y = img_height / display_height
-                        
-                        # Get the last rectangle
-                        rect = None
-                        for obj in reversed(objects):
-                            if obj["type"] == "rect":
-                                rect = obj
-                                break
-                        
-                        if rect:
-                            # Scale coordinates
-                            left = int(rect["left"] * scale_x)
-                            top = int(rect["top"] * scale_y)
-                            width = int(rect["width"] * scale_x)
-                            height = int(rect["height"] * scale_y)
-                            
-                            # Calculate crop coordinates
-                            x1 = max(0, left)
-                            y1 = max(0, top)
-                            x2 = min(img.size[0], left + width)
-                            y2 = min(img.size[1], top + height)
-                            
-                            # Crop the image
-                            cropped_img = img.crop((x1, y1, x2, y2))
-                            
-                            # Show cropped preview
-                            st.success(f"✅ Selected area: {x2-x1}×{y2-y1} pixels")
-                            st.image(cropped_img, caption="Selected Area Preview", width=300)
-                        else:
-                            cropped_img = img
-                    else:
-                        cropped_img = img
-                        st.warning("⚠️ No selection made. Will process full image.")
-                else:
-                    cropped_img = img
+            if selection_mode == "manual_coords":
+                cropped_img = create_manual_selection_interface(img)
             
             elif selection_mode == "slider_crop":
                 st.info("Use the sliders below to define crop area (as percentages)")
@@ -551,13 +486,13 @@ def main():
     <div class="tips-box">
         <h4>💡 Tips for Best Results:</h4>
         <ul>
-            <li><strong>Draw Selection:</strong> Use the rectangle tool to precisely select measurement areas</li>
-            <li><strong>Paper Labels:</strong> Draw tight boxes around handwritten measurements (like "645m", "155m")</li>
+            <li><strong>Manual Coordinates:</strong> Input exact pixel coordinates for precise selection</li>
+            <li><strong>Paper Labels:</strong> Select areas with handwritten measurements (like "645m", "155m")</li>
             <li><strong>Cable Text:</strong> Select areas with printed text on black cables/wires</li>
             <li><strong>Smart Extract:</strong> Automatically finds and extracts all measurements in the image</li>
-            <li><strong>Selection Modes:</strong> Choose between drawing, slider cropping, or full image processing</li>
+            <li><strong>Selection Modes:</strong> Choose between manual coordinates, slider cropping, or full image processing</li>
             <li><strong>Good Lighting:</strong> Ensure clear contrast between text and background</li>
-            <li><strong>Multiple Selections:</strong> You can clear and redraw selections as needed</li>
+            <li><strong>Coordinate Selection:</strong> Use the manual coordinate inputs for precise area selection</li>
         </ul>
     </div>
     """, unsafe_allow_html=True)
@@ -567,7 +502,7 @@ def main():
     st.markdown("""
     **📋 Required Installation:**
     ```bash
-    pip install streamlit pytesseract pillow opencv-python numpy scipy scikit-image streamlit-drawable-canvas
+    pip install streamlit pytesseract pillow opencv-python numpy scipy scikit-image
     
     # For Ubuntu/Debian:
     sudo apt install tesseract-ocr tesseract-ocr-eng
@@ -575,6 +510,8 @@ def main():
     # For Windows: Download Tesseract from https://github.com/UB-Mannheim/tesseract/wiki
     # For macOS: brew install tesseract
     ```
+    
+    **Note:** This version removes the `streamlit-drawable-canvas` dependency that was causing the error.
     """)
 
 if __name__ == "__main__":
