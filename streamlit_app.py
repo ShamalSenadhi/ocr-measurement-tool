@@ -1,20 +1,20 @@
 import streamlit as st
-import pytesseract
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter, ImageDraw
-from scipy import ndimage
-from skimage import morphology
+from PIL import Image, ImageEnhance, ImageFilter
+import pytesseract
 import re
 import io
 import base64
+from scipy import ndimage
+from streamlit_drawable_canvas import st_canvas
+import pandas as pd
 
-# Set page configuration
+# Configure page
 st.set_page_config(
     page_title="📏 Measurement & Cable Text OCR Extractor",
     page_icon="📏",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
 # Custom CSS for better styling
@@ -22,41 +22,39 @@ st.markdown("""
 <style>
     .main-header {
         background: linear-gradient(135deg, #1e3c72, #2a5298);
-        padding: 20px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-        color: white;
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
         text-align: center;
+        font-size: 2.5rem;
+        font-weight: bold;
+        margin-bottom: 1rem;
     }
-    .result-box {
+    .sub-header {
+        text-align: center;
+        color: #666;
+        margin-bottom: 2rem;
+    }
+    .stButton > button {
+        width: 100%;
+        border-radius: 8px;
+        border: none;
+        padding: 0.5rem;
+        font-weight: 600;
+        transition: all 0.3s ease;
+    }
+    .measurement-result {
         background: linear-gradient(135deg, #e3f2fd, #bbdefb);
         border-left: 5px solid #2196f3;
-        padding: 15px;
-        margin-top: 15px;
-        border-radius: 5px;
+        padding: 1rem;
+        border-radius: 0 8px 8px 0;
+        margin: 1rem 0;
     }
     .tips-box {
         background: rgba(30, 60, 114, 0.1);
         border: 1px solid rgba(30, 60, 114, 0.2);
-        padding: 15px;
-        margin-top: 20px;
+        padding: 1rem;
         border-radius: 8px;
-    }
-    .measurement-item {
-        background: white;
-        padding: 10px;
-        border-radius: 5px;
-        margin: 5px 0;
-        border-left: 4px solid #2a5298;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .stButton>button {
-        width: 100%;
-        border-radius: 8px;
-        border: none;
-        padding: 0.5rem 1rem;
-        font-weight: 600;
-        transition: all 0.3s ease;
+        margin-top: 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -148,38 +146,35 @@ def extract_measurement_values(text):
     # Also look for standalone numbers that might be measurements
     standalone_numbers = re.findall(r'(?<![a-zA-Z])(\d+\.?\d+)(?![a-zA-Z])', text)
     for num in standalone_numbers:
-        try:
-            if float(num) > 1 and float(num) < 10000:  # Reasonable measurement range
-                measurements.append(f"{num} (unit unknown)")
-        except ValueError:
-            continue
+        if float(num) > 1 and float(num) < 10000:  # Reasonable measurement range
+            measurements.append(f"{num} (unit unknown)")
 
     return list(set(measurements))  # Remove duplicates
 
-def extract_measurements(img, detection_mode='measurement', language='eng', enhance_mode='auto'):
+def extract_measurements_from_image(img, detection_mode='measurement', language='eng', enhance_mode='auto'):
     """Extract measurements from images with specialized processing"""
     try:
         # Apply specialized enhancement
         processed_img = enhance_for_measurements(img, enhance_mode)
-        
+
         # Get appropriate OCR config
         config = get_measurement_config(detection_mode, language)
-        
+
         # Extract text
         text = pytesseract.image_to_string(processed_img, config=config)
         cleaned_text = text.strip()
-        
+
         # If poor results, try with original image
         if len(cleaned_text) < 2:
             text_original = pytesseract.image_to_string(img, config=config)
             if len(text_original.strip()) > len(cleaned_text):
                 cleaned_text = text_original.strip()
-        
+
         # Extract measurements using regex
         measurements = extract_measurement_values(cleaned_text)
-        
+
         return measurements, cleaned_text, processed_img
-        
+
     except Exception as e:
         st.error(f"Extraction Error: {str(e)}")
         return [], "", None
@@ -189,7 +184,7 @@ def smart_measurement_extract(img, language='eng'):
     try:
         all_measurements = []
         processing_details = []
-        
+
         # Try different combinations of modes and enhancements
         combinations = [
             ('measurement', 'handwriting'),
@@ -198,109 +193,61 @@ def smart_measurement_extract(img, language='eng'):
             ('both', 'auto'),
             ('numbers_only', 'high_contrast')
         ]
-        
+
         for detection_mode, enhance_mode in combinations:
             try:
                 processed_img = enhance_for_measurements(img, enhance_mode)
                 config = get_measurement_config(detection_mode, language)
                 text = pytesseract.image_to_string(processed_img, config=config).strip()
-                
+
                 if text:
                     measurements = extract_measurement_values(text)
                     if measurements:
                         all_measurements.extend(measurements)
-                        processing_details.append({
-                            'mode': f"{detection_mode} + {enhance_mode}",
-                            'status': 'success',
-                            'result': ', '.join(measurements)
-                        })
+                        processing_details.append(f"✅ {detection_mode} + {enhance_mode}: {', '.join(measurements)}")
                     else:
-                        processing_details.append({
-                            'mode': f"{detection_mode} + {enhance_mode}",
-                            'status': 'text_only',
-                            'result': text
-                        })
-                        
+                        processing_details.append(f"📝 {detection_mode} + {enhance_mode}: '{text}'")
+
             except Exception as e:
-                processing_details.append({
-                    'mode': f"{detection_mode} + {enhance_mode}",
-                    'status': 'error',
-                    'result': str(e)
-                })
+                processing_details.append(f"❌ {detection_mode} + {enhance_mode}: {str(e)}")
                 continue
-        
+
         # Remove duplicates
         unique_measurements = list(set(all_measurements))
         
         return unique_measurements, processing_details
-        
+
     except Exception as e:
         st.error(f"Smart extraction error: {str(e)}")
         return [], []
 
-def create_manual_selection_interface(img):
-    """Create a manual selection interface using click coordinates"""
-    st.info("Click on the image to define crop boundaries (click to set top-left, then bottom-right)")
-    
-    # Display the image and get click coordinates
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        # Show the image
-        st.image(img, caption="Click to select crop area", use_column_width=True)
-    
-    with col2:
-        st.write("**Manual Crop Selection:**")
-        
-        # Manual coordinate input
-        img_width, img_height = img.size
-        
-        x1 = st.number_input("Left (X1)", 0, img_width, 0, step=1)
-        y1 = st.number_input("Top (Y1)", 0, img_height, 0, step=1)
-        x2 = st.number_input("Right (X2)", 0, img_width, img_width, step=1)
-        y2 = st.number_input("Bottom (Y2)", 0, img_height, img_height, step=1)
-        
-        # Validate coordinates
-        if x2 <= x1:
-            x2 = x1 + 100
-        if y2 <= y1:
-            y2 = y1 + 100
-            
-        # Show selection info
-        st.write(f"Selection: {x2-x1} × {y2-y1} pixels")
-        
-        if st.button("Preview Selection"):
-            cropped_img = img.crop((x1, y1, x2, y2))
-            st.image(cropped_img, caption="Preview", width=200)
-            return cropped_img
-    
-    return img.crop((x1, y1, x2, y2))
-
+# Main Application
 def main():
-    # Header
-    st.markdown("""
-    <div class="main-header">
-        <h1>📏 Measurement & Cable Text OCR Extractor</h1>
-        <p>Extract handwritten measurements from paper labels AND printed text from cables/wires</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
+    st.markdown('<div class="main-header">📏 Measurement & Cable Text OCR Extractor</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Extract handwritten measurements from paper labels AND printed text from cables/wires</div>', unsafe_allow_html=True)
+
+    # Initialize session state
+    if 'uploaded_image' not in st.session_state:
+        st.session_state.uploaded_image = None
+    if 'processing_results' not in st.session_state:
+        st.session_state.processing_results = {}
+
     # Sidebar controls
-    st.sidebar.header("🎯 Configuration")
-    
-    # File upload
-    uploaded_file = st.sidebar.file_uploader(
-        "📁 Upload Image",
-        type=['png', 'jpg', 'jpeg', 'bmp', 'tiff'],
-        help="Upload an image containing measurements or cable text"
-    )
-    
-    if uploaded_file is not None:
-        # Load image
-        img = Image.open(uploaded_file)
+    with st.sidebar:
+        st.header("🛠️ Controls")
         
-        # Sidebar settings
-        detection_mode = st.sidebar.selectbox(
+        # File upload
+        uploaded_file = st.file_uploader(
+            "📁 Upload Image",
+            type=['png', 'jpg', 'jpeg', 'bmp', 'tiff'],
+            help="Upload an image containing measurements or cable text"
+        )
+        
+        if uploaded_file:
+            st.session_state.uploaded_image = Image.open(uploaded_file)
+        
+        # Detection mode
+        detection_mode = st.selectbox(
             "🎯 Detection Mode",
             ['measurement', 'cable_text', 'both', 'numbers_only'],
             format_func=lambda x: {
@@ -311,7 +258,8 @@ def main():
             }[x]
         )
         
-        language = st.sidebar.selectbox(
+        # Language selection
+        language = st.selectbox(
             "🌐 Language",
             ['eng', 'eng+ara', 'eng+chi_sim', 'eng+fra', 'eng+deu'],
             format_func=lambda x: {
@@ -323,7 +271,8 @@ def main():
             }[x]
         )
         
-        enhance_mode = st.sidebar.selectbox(
+        # Enhancement mode
+        enhance_mode = st.selectbox(
             "🔧 Enhancement",
             ['auto', 'high_contrast', 'cable_optimized', 'handwriting', 'minimal'],
             format_func=lambda x: {
@@ -334,185 +283,161 @@ def main():
                 'minimal': '🎯 Minimal Processing'
             }[x]
         )
-        
-        # Main content area
-        col1, col2 = st.columns([3, 2])
+
+    # Main content area
+    if st.session_state.uploaded_image:
+        col1, col2 = st.columns([2, 1])
         
         with col1:
-            st.subheader("📸 Image & Area Selection")
+            st.subheader("🖼️ Image Selection")
             
-            # Selection mode options
-            selection_mode = st.radio(
-                "🎯 Selection Mode:",
-                ["full_image", "manual_coords", "slider_crop"],
-                format_func=lambda x: {
-                    "full_image": "📄 Process Full Image",
-                    "manual_coords": "📐 Manual Coordinates",
-                    "slider_crop": "📏 Slider-based Crop"
-                }[x],
-                horizontal=True
+            # Canvas for manual selection
+            canvas_result = st_canvas(
+                fill_color="rgba(255, 0, 0, 0.3)",
+                stroke_width=2,
+                stroke_color="#ff0000",
+                background_image=st.session_state.uploaded_image,
+                update_streamlit=True,
+                height=400,
+                width=600,
+                drawing_mode="rect",
+                key="canvas",
+                display_toolbar=True
             )
             
-            if selection_mode == "manual_coords":
-                cropped_img = create_manual_selection_interface(img)
+            # Processing buttons
+            st.subheader("🚀 Processing Options")
             
-            elif selection_mode == "slider_crop":
-                st.info("Use the sliders below to define crop area (as percentages)")
-                
-                col1a, col1b = st.columns(2)
-                with col1a:
-                    crop_left = st.slider("Left %", 0, 100, 0) / 100
-                    crop_top = st.slider("Top %", 0, 100, 0) / 100
-                with col1b:
-                    crop_right = st.slider("Right %", 0, 100, 100) / 100
-                    crop_bottom = st.slider("Bottom %", 0, 100, 100) / 100
-                
-                # Calculate crop coordinates
-                w, h = img.size
-                x1 = int(crop_left * w)
-                y1 = int(crop_top * h)
-                x2 = int(crop_right * w)
-                y2 = int(crop_bottom * h)
-                
-                # Show cropped preview
-                cropped_img = img.crop((x1, y1, x2, y2))
-                st.image(cropped_img, caption=f"Cropped Preview ({x2-x1}×{y2-y1})", width=300)
+            button_cols = st.columns(4)
             
-            else:  # full_image
-                st.image(img, caption=f"Original Size: {img.size[0]}×{img.size[1]} pixels", use_column_width=True)
-                cropped_img = img
+            with button_cols[0]:
+                if st.button("📏 Extract Selection", key="extract_btn"):
+                    if canvas_result.json_data["objects"]:
+                        # Get the last drawn rectangle
+                        rect = canvas_result.json_data["objects"][-1]
+                        
+                        # Calculate crop coordinates
+                        left = int(rect["left"])
+                        top = int(rect["top"])
+                        width = int(rect["width"])
+                        height = int(rect["height"])
+                        
+                        # Crop the image
+                        cropped_img = st.session_state.uploaded_image.crop((left, top, left + width, top + height))
+                        
+                        # Process the cropped image
+                        with st.spinner("🔄 Processing selected area..."):
+                            measurements, raw_text, processed_img = extract_measurements_from_image(
+                                cropped_img, detection_mode, language, enhance_mode
+                            )
+                            
+                            st.session_state.processing_results = {
+                                'type': 'selection',
+                                'measurements': measurements,
+                                'raw_text': raw_text,
+                                'processed_img': processed_img,
+                                'cropped_img': cropped_img
+                            }
+                    else:
+                        st.warning("⚠️ Please make a selection by drawing a rectangle on the image")
+            
+            with button_cols[1]:
+                if st.button("📄 Process Full Image", key="full_btn"):
+                    with st.spinner("🔄 Processing full image..."):
+                        measurements, raw_text, processed_img = extract_measurements_from_image(
+                            st.session_state.uploaded_image, detection_mode, language, enhance_mode
+                        )
+                        
+                        st.session_state.processing_results = {
+                            'type': 'full',
+                            'measurements': measurements,
+                            'raw_text': raw_text,
+                            'processed_img': processed_img
+                        }
+            
+            with button_cols[2]:
+                if st.button("🧠 Smart Auto-Extract", key="smart_btn"):
+                    with st.spinner("🧠 Smart extraction in progress..."):
+                        measurements, details = smart_measurement_extract(st.session_state.uploaded_image, language)
+                        
+                        st.session_state.processing_results = {
+                            'type': 'smart',
+                            'measurements': measurements,
+                            'details': details
+                        }
+            
+            with button_cols[3]:
+                if st.button("🗑️ Clear Results", key="clear_btn"):
+                    st.session_state.processing_results = {}
+                    st.rerun()
         
         with col2:
-            st.subheader("🔧 Processing Options")
+            st.subheader("📊 Results")
             
-            # Process buttons
-            if st.button("📏 Extract Measurements", type="primary"):
-                with st.spinner("🔄 Processing image..."):
-                    measurements, raw_text, processed_img = extract_measurements(
-                        cropped_img, detection_mode, language, enhance_mode
-                    )
-                    
-                    # Store results in session state
-                    st.session_state['measurements'] = measurements
-                    st.session_state['raw_text'] = raw_text
-                    st.session_state['processed_img'] = processed_img
-            
-            if st.button("🧠 Smart Auto-Extract", type="secondary"):
-                with st.spinner("🧠 Smart extraction in progress..."):
-                    measurements, details = smart_measurement_extract(cropped_img, language)
-                    
-                    # Store results in session state
-                    st.session_state['smart_measurements'] = measurements
-                    st.session_state['smart_details'] = details
-        
-        # Display results
-        if 'measurements' in st.session_state or 'smart_measurements' in st.session_state:
-            st.markdown("---")
-            
-            # Regular extraction results
-            if 'measurements' in st.session_state:
-                st.subheader("📏 Extraction Results")
+            # Display results
+            if st.session_state.processing_results:
+                results = st.session_state.processing_results
                 
-                measurements = st.session_state['measurements']
-                raw_text = st.session_state['raw_text']
-                processed_img = st.session_state['processed_img']
-                
-                if measurements:
-                    st.markdown('<div class="result-box">', unsafe_allow_html=True)
-                    st.success(f"✅ Found {len(measurements)} measurements:")
+                if results['type'] == 'smart':
+                    st.markdown('<div class="measurement-result">', unsafe_allow_html=True)
+                    st.write("🧠 **Smart Extraction Results:**")
                     
-                    for i, measurement in enumerate(measurements, 1):
-                        st.markdown(f'<div class="measurement-item">• {measurement}</div>', 
-                                  unsafe_allow_html=True)
+                    if results['measurements']:
+                        for measurement in results['measurements']:
+                            st.write(f"• {measurement}")
+                    else:
+                        st.write("No measurements detected")
                     
+                    st.write("\n📊 **Processing Details:**")
+                    for detail in results['details']:
+                        st.write(f"  {detail}")
                     st.markdown('</div>', unsafe_allow_html=True)
                     
-                    # Copy to clipboard button
-                    measurements_text = "\n".join([f"• {m}" for m in measurements])
+                else:
+                    st.markdown('<div class="measurement-result">', unsafe_allow_html=True)
+                    st.write(f"📏 **{results['type'].title()} Extraction Results:**")
+                    
+                    if results['measurements']:
+                        for measurement in results['measurements']:
+                            st.write(f"• {measurement}")
+                    else:
+                        st.write("No measurements detected")
+                    
+                    st.write(f"\n**Raw OCR Text:** '{results['raw_text']}'")
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    # Show processed image if available
+                    if 'processed_img' in results and results['processed_img']:
+                        st.subheader("🔍 Processed Image")
+                        st.image(results['processed_img'], caption="Enhanced for OCR", use_column_width=True)
+                    
+                    # Show cropped image if available
+                    if 'cropped_img' in results and results['cropped_img']:
+                        st.subheader("✂️ Selected Area")
+                        st.image(results['cropped_img'], caption="Selected Region", use_column_width=True)
+                
+                # Copy results button
+                if results.get('measurements'):
+                    measurements_text = '\n'.join([f"• {m}" for m in results['measurements']])
                     st.text_area("📋 Copy Results:", measurements_text, height=100)
-                else:
-                    st.warning("No measurements detected")
-                
-                # Show raw text and processed image
-                with st.expander("🔍 View Details"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.text_area("Raw OCR Text:", raw_text, height=100)
-                    with col2:
-                        if processed_img:
-                            st.image(processed_img, caption="Processed Image", width=300)
             
-            # Smart extraction results
-            if 'smart_measurements' in st.session_state:
-                st.subheader("🧠 Smart Extraction Results")
-                
-                measurements = st.session_state['smart_measurements']
-                details = st.session_state['smart_details']
-                
-                if measurements:
-                    st.markdown('<div class="result-box">', unsafe_allow_html=True)
-                    st.success(f"✅ Smart extraction found {len(measurements)} unique measurements:")
-                    
-                    for i, measurement in enumerate(measurements, 1):
-                        st.markdown(f'<div class="measurement-item">• {measurement}</div>', 
-                                  unsafe_allow_html=True)
-                    
-                    st.markdown('</div>', unsafe_allow_html=True)
-                    
-                    # Copy to clipboard button
-                    measurements_text = "\n".join([f"• {m}" for m in measurements])
-                    st.text_area("📋 Copy Smart Results:", measurements_text, height=100)
-                else:
-                    st.warning("No clear measurements detected")
-                
-                # Show processing details
-                with st.expander("📊 Processing Details"):
-                    for detail in details:
-                        status_icon = {
-                            'success': '✅',
-                            'text_only': '📝',
-                            'error': '❌'
-                        }.get(detail['status'], '❓')
-                        
-                        st.write(f"{status_icon} **{detail['mode']}**: {detail['result']}")
+            else:
+                st.info("Upload an image and select a processing method to see results here.")
     
     else:
-        # Instructions when no image is uploaded
-        st.info("👆 Please upload an image to get started")
-    
+        st.info("👆 Upload an image to get started!")
+
     # Tips section
-    st.markdown("---")
-    st.markdown("""
-    <div class="tips-box">
-        <h4>💡 Tips for Best Results:</h4>
-        <ul>
-            <li><strong>Manual Coordinates:</strong> Input exact pixel coordinates for precise selection</li>
-            <li><strong>Paper Labels:</strong> Select areas with handwritten measurements (like "645m", "155m")</li>
-            <li><strong>Cable Text:</strong> Select areas with printed text on black cables/wires</li>
-            <li><strong>Smart Extract:</strong> Automatically finds and extracts all measurements in the image</li>
-            <li><strong>Selection Modes:</strong> Choose between manual coordinates, slider cropping, or full image processing</li>
-            <li><strong>Good Lighting:</strong> Ensure clear contrast between text and background</li>
-            <li><strong>Coordinate Selection:</strong> Use the manual coordinate inputs for precise area selection</li>
-        </ul>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Installation note
-    st.markdown("---")
-    st.markdown("""
-    **📋 Required Installation:**
-    ```bash
-    pip install streamlit pytesseract pillow opencv-python numpy scipy scikit-image
-    
-    # For Ubuntu/Debian:
-    sudo apt install tesseract-ocr tesseract-ocr-eng
-    
-    # For Windows: Download Tesseract from https://github.com/UB-Mannheim/tesseract/wiki
-    # For macOS: brew install tesseract
-    ```
-    
-    **Note:** This version removes the `streamlit-drawable-canvas` dependency that was causing the error.
+    st.markdown('<div class="tips-box">', unsafe_allow_html=True)
+    st.subheader("💡 Tips for Best Results:")
+    st.write("""
+    - **Paper Labels:** Draw rectangles around handwritten measurements (like "645m", "155m")
+    - **Cable Text:** Crop close to printed text on black cables/wires  
+    - **Smart Extract:** Automatically finds and extracts all measurements in the image
+    - **Both Mode:** Detects both handwritten labels AND cable markings
+    - **Good Lighting:** Ensure clear contrast between text and background
     """)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
