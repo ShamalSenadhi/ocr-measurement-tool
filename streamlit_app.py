@@ -1,13 +1,12 @@
 import streamlit as st
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter, ImageDraw
 import pytesseract
 import re
 import io
 import base64
 from scipy import ndimage
-from streamlit_drawable_canvas import st_canvas
 import pandas as pd
 
 # Configure page
@@ -55,6 +54,13 @@ st.markdown("""
         padding: 1rem;
         border-radius: 8px;
         margin-top: 1rem;
+    }
+    .selection-box {
+        border: 2px solid #ff4444;
+        background: rgba(255, 68, 68, 0.2);
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -110,10 +116,10 @@ def enhance_for_measurements(img, mode='auto'):
 def get_measurement_config(mode, language):
     """Get OCR configuration for different measurement types"""
     configs = {
-        'measurement': f'--oem 3 --psm 8 -l {language} -c tessedit_char_whitelist=0123456789.,-+m',
+        'measurement': f'--oem 3 --psm 8 -l {language} -c tesseract_char_whitelist=0123456789.,-+m',
         'cable_text': f'--oem 3 --psm 7 -l {language}',
         'both': f'--oem 3 --psm 6 -l {language}',
-        'numbers_only': f'--oem 3 --psm 8 -l {language} -c tessedit_char_whitelist=0123456789.,-+'
+        'numbers_only': f'--oem 3 --psm 8 -l {language} -c tesseract_char_whitelist=0123456789.,-+'
     }
     return configs.get(mode, configs['measurement'])
 
@@ -221,6 +227,42 @@ def smart_measurement_extract(img, language='eng'):
         st.error(f"Smart extraction error: {str(e)}")
         return [], []
 
+def draw_selection_box(img, x1, y1, x2, y2):
+    """Draw a selection rectangle on the image"""
+    img_copy = img.copy()
+    draw = ImageDraw.Draw(img_copy)
+    
+    # Draw rectangle
+    draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+    
+    # Add semi-transparent overlay
+    overlay = Image.new('RGBA', img_copy.size, (255, 0, 0, 50))
+    mask = Image.new('L', img_copy.size, 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rectangle([x1, y1, x2, y2], fill=255)
+    
+    img_copy = Image.composite(overlay, img_copy.convert('RGBA'), mask)
+    return img_copy.convert('RGB')
+
+def create_grid_selections(img_width, img_height, grid_size=4):
+    """Create predefined grid selections for easy selection"""
+    selections = []
+    cell_width = img_width // grid_size
+    cell_height = img_height // grid_size
+    
+    for row in range(grid_size):
+        for col in range(grid_size):
+            x1 = col * cell_width
+            y1 = row * cell_height
+            x2 = (col + 1) * cell_width
+            y2 = (row + 1) * cell_height
+            selections.append({
+                'name': f'Grid {row+1}-{col+1}',
+                'coords': (x1, y1, x2, y2)
+            })
+    
+    return selections
+
 # Main Application
 def main():
     st.markdown('<div class="main-header">📏 Measurement & Cable Text OCR Extractor</div>', unsafe_allow_html=True)
@@ -231,6 +273,10 @@ def main():
         st.session_state.uploaded_image = None
     if 'processing_results' not in st.session_state:
         st.session_state.processing_results = {}
+    if 'selection_coords' not in st.session_state:
+        st.session_state.selection_coords = None
+    if 'selection_mode' not in st.session_state:
+        st.session_state.selection_mode = 'manual'
 
     # Sidebar controls
     with st.sidebar:
@@ -245,6 +291,15 @@ def main():
         
         if uploaded_file:
             st.session_state.uploaded_image = Image.open(uploaded_file)
+            st.session_state.selection_coords = None  # Reset selection when new image uploaded
+        
+        # Selection method
+        st.subheader("✂️ Selection Method")
+        selection_method = st.radio(
+            "Choose selection method:",
+            ["Manual Coordinates", "Grid Selection", "Preset Areas"],
+            help="Different ways to select areas of the image"
+        )
         
         # Detection mode
         detection_mode = st.selectbox(
@@ -286,24 +341,80 @@ def main():
 
     # Main content area
     if st.session_state.uploaded_image:
+        img = st.session_state.uploaded_image
+        img_width, img_height = img.size
+        
         col1, col2 = st.columns([2, 1])
         
         with col1:
             st.subheader("🖼️ Image Selection")
             
-            # Canvas for manual selection
-            canvas_result = st_canvas(
-                fill_color="rgba(255, 0, 0, 0.3)",
-                stroke_width=2,
-                stroke_color="#ff0000",
-                background_image=st.session_state.uploaded_image,
-                update_streamlit=True,
-                height=400,
-                width=600,
-                drawing_mode="rect",
-                key="canvas",
-                display_toolbar=True
-            )
+            # Selection interface based on chosen method
+            if selection_method == "Manual Coordinates":
+                st.write("📐 **Manual Coordinate Selection**")
+                
+                coord_col1, coord_col2 = st.columns(2)
+                with coord_col1:
+                    x1 = st.number_input("X1 (left)", min_value=0, max_value=img_width, value=0, key="x1")
+                    y1 = st.number_input("Y1 (top)", min_value=0, max_value=img_height, value=0, key="y1")
+                
+                with coord_col2:
+                    x2 = st.number_input("X2 (right)", min_value=0, max_value=img_width, value=min(200, img_width), key="x2")
+                    y2 = st.number_input("Y2 (bottom)", min_value=0, max_value=img_height, value=min(100, img_height), key="y2")
+                
+                # Validate coordinates
+                if x1 < x2 and y1 < y2:
+                    st.session_state.selection_coords = (x1, y1, x2, y2)
+                    # Show image with selection
+                    selected_img = draw_selection_box(img, x1, y1, x2, y2)
+                    st.image(selected_img, caption=f"Selection: {x2-x1}×{y2-y1} pixels", use_column_width=True)
+                else:
+                    st.warning("⚠️ Invalid coordinates: X2 must be > X1 and Y2 must be > Y1")
+            
+            elif selection_method == "Grid Selection":
+                st.write("🔲 **Grid Selection**")
+                
+                grid_size = st.selectbox("Grid size:", [2, 3, 4, 6], index=2)
+                grid_selections = create_grid_selections(img_width, img_height, grid_size)
+                
+                selected_grid = st.selectbox(
+                    "Select grid cell:",
+                    range(len(grid_selections)),
+                    format_func=lambda x: grid_selections[x]['name']
+                )
+                
+                if selected_grid is not None:
+                    x1, y1, x2, y2 = grid_selections[selected_grid]['coords']
+                    st.session_state.selection_coords = (x1, y1, x2, y2)
+                    
+                    # Show image with grid and selection
+                    selected_img = draw_selection_box(img, x1, y1, x2, y2)
+                    st.image(selected_img, caption=f"Grid {grid_selections[selected_grid]['name']}: {x2-x1}×{y2-y1} pixels", use_column_width=True)
+            
+            elif selection_method == "Preset Areas":
+                st.write("🎯 **Preset Selection Areas**")
+                
+                preset_options = {
+                    "Top Left Quarter": (0, 0, img_width//2, img_height//2),
+                    "Top Right Quarter": (img_width//2, 0, img_width, img_height//2),
+                    "Bottom Left Quarter": (0, img_height//2, img_width//2, img_height),
+                    "Bottom Right Quarter": (img_width//2, img_height//2, img_width, img_height),
+                    "Center Half": (img_width//4, img_height//4, 3*img_width//4, 3*img_height//4),
+                    "Top Half": (0, 0, img_width, img_height//2),
+                    "Bottom Half": (0, img_height//2, img_width, img_height),
+                    "Left Half": (0, 0, img_width//2, img_height),
+                    "Right Half": (img_width//2, 0, img_width, img_height)
+                }
+                
+                selected_preset = st.selectbox("Select preset area:", list(preset_options.keys()))
+                
+                if selected_preset:
+                    x1, y1, x2, y2 = preset_options[selected_preset]
+                    st.session_state.selection_coords = (x1, y1, x2, y2)
+                    
+                    # Show image with selection
+                    selected_img = draw_selection_box(img, x1, y1, x2, y2)
+                    st.image(selected_img, caption=f"{selected_preset}: {x2-x1}×{y2-y1} pixels", use_column_width=True)
             
             # Processing buttons
             st.subheader("🚀 Processing Options")
@@ -312,18 +423,11 @@ def main():
             
             with button_cols[0]:
                 if st.button("📏 Extract Selection", key="extract_btn"):
-                    if canvas_result.json_data["objects"]:
-                        # Get the last drawn rectangle
-                        rect = canvas_result.json_data["objects"][-1]
-                        
-                        # Calculate crop coordinates
-                        left = int(rect["left"])
-                        top = int(rect["top"])
-                        width = int(rect["width"])
-                        height = int(rect["height"])
+                    if st.session_state.selection_coords:
+                        x1, y1, x2, y2 = st.session_state.selection_coords
                         
                         # Crop the image
-                        cropped_img = st.session_state.uploaded_image.crop((left, top, left + width, top + height))
+                        cropped_img = img.crop((x1, y1, x2, y2))
                         
                         # Process the cropped image
                         with st.spinner("🔄 Processing selected area..."):
@@ -336,16 +440,17 @@ def main():
                                 'measurements': measurements,
                                 'raw_text': raw_text,
                                 'processed_img': processed_img,
-                                'cropped_img': cropped_img
+                                'cropped_img': cropped_img,
+                                'coords': (x1, y1, x2, y2)
                             }
                     else:
-                        st.warning("⚠️ Please make a selection by drawing a rectangle on the image")
+                        st.warning("⚠️ Please make a selection first")
             
             with button_cols[1]:
                 if st.button("📄 Process Full Image", key="full_btn"):
                     with st.spinner("🔄 Processing full image..."):
                         measurements, raw_text, processed_img = extract_measurements_from_image(
-                            st.session_state.uploaded_image, detection_mode, language, enhance_mode
+                            img, detection_mode, language, enhance_mode
                         )
                         
                         st.session_state.processing_results = {
@@ -358,7 +463,7 @@ def main():
             with button_cols[2]:
                 if st.button("🧠 Smart Auto-Extract", key="smart_btn"):
                     with st.spinner("🧠 Smart extraction in progress..."):
-                        measurements, details = smart_measurement_extract(st.session_state.uploaded_image, language)
+                        measurements, details = smart_measurement_extract(img, language)
                         
                         st.session_state.processing_results = {
                             'type': 'smart',
@@ -397,7 +502,12 @@ def main():
                     st.markdown('<div class="measurement-result">', unsafe_allow_html=True)
                     st.write(f"📏 **{results['type'].title()} Extraction Results:**")
                     
+                    if 'coords' in results:
+                        x1, y1, x2, y2 = results['coords']
+                        st.write(f"📐 **Selected Area:** {x2-x1}×{y2-y1} pixels at ({x1},{y1})")
+                    
                     if results['measurements']:
+                        st.write("**Found Measurements:**")
                         for measurement in results['measurements']:
                             st.write(f"• {measurement}")
                     else:
@@ -422,7 +532,7 @@ def main():
                     st.text_area("📋 Copy Results:", measurements_text, height=100)
             
             else:
-                st.info("Upload an image and select a processing method to see results here.")
+                st.info("Select an area and choose a processing method to see results here.")
     
     else:
         st.info("👆 Upload an image to get started!")
@@ -431,11 +541,16 @@ def main():
     st.markdown('<div class="tips-box">', unsafe_allow_html=True)
     st.subheader("💡 Tips for Best Results:")
     st.write("""
-    - **Paper Labels:** Draw rectangles around handwritten measurements (like "645m", "155m")
-    - **Cable Text:** Crop close to printed text on black cables/wires  
-    - **Smart Extract:** Automatically finds and extracts all measurements in the image
-    - **Both Mode:** Detects both handwritten labels AND cable markings
-    - **Good Lighting:** Ensure clear contrast between text and background
+    **Selection Methods:**
+    - **Manual Coordinates:** Precise pixel-level selection using X1,Y1,X2,Y2 coordinates
+    - **Grid Selection:** Quick selection using predefined grid cells (2×2, 3×3, 4×4, 6×6)
+    - **Preset Areas:** Common areas like quarters, halves, and center regions
+    
+    **Extraction Tips:**
+    - **Paper Labels:** Select tight areas around handwritten measurements ("645m", "155m")
+    - **Cable Text:** Focus on printed text areas on cables/wires  
+    - **Smart Extract:** Tries all methods automatically - good for mixed content
+    - **Good Contrast:** Ensure clear difference between text and background
     """)
     st.markdown('</div>', unsafe_allow_html=True)
 
