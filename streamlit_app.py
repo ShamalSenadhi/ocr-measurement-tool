@@ -1,323 +1,412 @@
 
 import streamlit as st
 import pytesseract
-import io
-import base64
 import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
+import io
+import base64
 from scipy import ndimage
-from skimage import morphology
-import re
 
-# --- Page Configuration ---
+# Page configuration
 st.set_page_config(
-    page_title="Measurement & Cable Text OCR",
-    page_icon="📏",
+    page_title="✍️ Handwriting OCR Extractor",
+    page_icon="✍️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- Title and Description ---
-st.title("📏 Measurement & Cable Text OCR Extractor")
+# Custom CSS for better styling
 st.markdown("""
-    Extract handwritten measurements from paper labels AND printed text from cables/wires.
-    Upload an image below and use the options to refine the extraction process.
-""")
+<style>
+.main-header {
+    font-size: 2.5rem;
+    color: #1f77b4;
+    text-align: center;
+    margin-bottom: 2rem;
+}
+.tips-box {
+    background-color: #e3f2fd;
+    border-left: 4px solid #2196f3;
+    padding: 15px;
+    margin: 15px 0;
+    border-radius: 5px;
+}
+.result-box {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 5px;
+    padding: 15px;
+    margin: 15px 0;
+    font-family: monospace;
+    white-space: pre-wrap;
+    max-height: 300px;
+    overflow-y: auto;
+}
+.metric-container {
+    background-color: #f0f2f6;
+    padding: 10px;
+    border-radius: 5px;
+    margin: 10px 0;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# --- Sidebar for Controls ---
-st.sidebar.header("⚙️ Settings")
-
-# --- Image Upload ---
-uploaded_file = st.sidebar.file_uploader("📁 Upload Image", type=["png", "jpg", "jpeg"])
-
-# --- Detection Mode ---
-detection_mode = st.sidebar.selectbox(
-    "🎯 Detection Mode",
-    ("measurement", "cable_text", "both", "numbers_only"),
-    format_func=lambda x: {
-        "measurement": "📏 Measurement Labels",
-        "cable_text": "🔌 Cable/Wire Text",
-        "both": "🔀 Both Labels & Cable Text",
-        "numbers_only": "🔢 Numbers Only"
-    }[x]
-)
-
-# --- Language Selection ---
-language = st.sidebar.selectbox(
-    "🌐 Language",
-    ("eng", "eng+ara", "eng+chi_sim", "eng+fra", "eng+deu"),
-    format_func=lambda x: {
-        "eng": "English",
-        "eng+ara": "English + Arabic",
-        "eng+chi_sim": "English + Chinese",
-        "eng+fra": "English + French",
-        "eng+deu": "English + German",
-    }[x]
-)
-
-# --- Image Enhancement ---
-enhance_mode = st.sidebar.selectbox(
-    "🔧 Enhancement",
-    ("auto", "high_contrast", "cable_optimized", "handwriting", "minimal"),
-    format_func=lambda x: {
-        "auto": "🤖 Auto Enhance",
-        "high_contrast": "⚡ High Contrast",
-        "cable_optimized": "🔌 Cable Text Optimized",
-        "handwriting": "✍️ Handwriting Optimized",
-        "minimal": "🎯 Minimal Processing"
-    }[x]
-)
-
-# --- Main Content Area ---
-st.header("🖼️ Image Preview and Results")
-
-image_placeholder = st.empty()
-result_placeholder = st.empty()
-status_placeholder = st.empty()
-
-# --- Image Processing and OCR Functions (from original Colab notebook) ---
-def enhance_for_measurements(img, mode='auto'):
-    """Enhanced preprocessing for measurement extraction"""
+def preprocess_for_handwriting(img, mode='auto'):
+    """Apply specialized preprocessing for handwriting recognition"""
+    # Convert PIL to OpenCV format
     cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-
-    if mode == 'cable_optimized':
-        enhanced = cv2.convertScaleAbs(gray, alpha=2.5, beta=50)
-        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(4,4))
-        enhanced = clahe.apply(enhanced)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 1))
-        enhanced = cv2.morphologyEx(enhanced, cv2.MORPH_CLOSE, kernel)
-        binary = cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-                                     cv2.THRESH_BINARY, 9, 10)
-
-    elif mode == 'handwriting':
-        denoised = cv2.fastNlMeansDenoising(gray, h=10)
-        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8,8))
-        enhanced = clahe.apply(denoised)
-        kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]]) * 0.5
-        enhanced = cv2.filter2D(enhanced, -1, kernel)
-        binary = cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                     cv2.THRESH_BINARY, 11, 2)
-
-    elif mode == 'high_contrast':
-        clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(6,6))
+    
+    if mode == 'high_contrast':
+        # Aggressive contrast enhancement
+        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
         enhanced = clahe.apply(gray)
-        enhanced = cv2.convertScaleAbs(enhanced, alpha=1.8, beta=30)
         _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
+        
+    elif mode == 'noise_reduction':
+        # Focus on noise reduction
+        denoised = cv2.fastNlMeansDenoising(gray, h=10)
+        enhanced = cv2.equalizeHist(denoised)
+        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+    elif mode == 'edge_enhance':
+        # Enhance edges for handwriting
+        kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+        enhanced = cv2.filter2D(gray, -1, kernel)
+        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
     elif mode == 'minimal':
+        # Minimal processing
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
+        
     else:  # auto
+        # Auto mode - comprehensive processing
+        # 1. Denoise
         denoised = cv2.fastNlMeansDenoising(gray, h=8)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        
+        # 2. Enhance contrast
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         enhanced = clahe.apply(denoised)
-        kernel = np.array([[0,-1,0], [-1,5,-1], [0,-1,0]])
-        enhanced = cv2.filter2D(enhanced, -1, kernel)
-        binary = cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        
+        # 3. Morphological operations to clean up
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
+        cleaned = cv2.morphologyEx(enhanced, cv2.MORPH_CLOSE, kernel)
+        
+        # 4. Adaptive threshold
+        binary = cv2.adaptiveThreshold(cleaned, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                      cv2.THRESH_BINARY, 11, 2)
-
+    
     return Image.fromarray(binary)
 
-def get_measurement_config(mode, language):
-    """Get OCR configuration for different measurement types"""
+def get_ocr_config(mode, language):
+    """Get OCR configuration based on mode"""
+    # Define character whitelist for handwriting
     handwriting_chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,+-=()[]{}/"' + "'"
+    
     configs = {
-        'measurement': f'--oem 3 --psm 8 -l {language} -c tessedit_char_whitelist=0123456789.,-+m',
-        'cable_text': f'--oem 3 --psm 7 -l {language}',
-        'both': f'--oem 3 --psm 6 -l {language}',
-        'numbers_only': f'--oem 3 --psm 8 -l {language} -c tessedit_char_whitelist=0123456789.,-+'
+        'handwriting': f'--oem 3 --psm 8 -l {language} -c tessedit_char_whitelist={handwriting_chars}',
+        'print': f'--oem 3 --psm 6 -l {language}',
+        'mixed': f'--oem 3 --psm 3 -l {language}',
+        'numbers': f'--oem 3 --psm 8 -l {language} -c tessedit_char_whitelist=0123456789.,+-=()[]m',
+        'single_word': f'--oem 3 --psm 8 -l {language}'
     }
-    return configs.get(mode, configs['measurement'])
+    return configs.get(mode, configs['handwriting'])
 
-def extract_measurement_values(text):
-    """Extract measurement values from OCR text using regex patterns"""
-    measurements = []
-
-    patterns = [
-        r'(\d+\.?\d*)\s*m(?:\s|$)',
-        r'(\d+\.?\d*)\s*mm(?:\s|$)',
-        r'(\d+\.?\d*)\s*cm(?:\s|$)',
-        r'(\d+\.?\d*)\s*km(?:\s|$)',
-        r'(\d+\.?\d*)\s*ft(?:\s|$)',
-        r'(\d+\.?\d*)\s*in(?:\s|$)',
-        r'(\d+)\s*-\s*(\d+)',
-    ]
-
-    for pattern in patterns:
-        matches = re.finditer(pattern, text, re.IGNORECASE)
-        for match in matches:
-            if len(match.groups()) == 2:
-                measurements.append(f"{match.group(1)}-{match.group(2)}")
-            else:
-                unit_match = re.search(r'm(?:m)?|cm|km|ft|in', pattern)
-                unit = unit_match.group(0) if unit_match else ""
-                measurements.append(f"{match.group(1)}{unit}")
-
-    standalone_numbers = re.findall(r'(?<![a-zA-Z])(\d+\.?\d+)(?![a-zA-Z])', text)
-    for num in standalone_numbers:
-        if float(num) > 1 and float(num) < 10000:
-            measurements.append(f"{num} (unit unknown)")
-
-    return list(set(measurements))
-
-def extract_measurements(img, detection_mode, language, enhance_mode, processing_type, status_callback=None):
-    """Extract measurements from images with specialized processing"""
-    if status_callback:
-        status_callback(f"Processing {processing_type}...")
-    else:
-        print(f"Processing {processing_type}...")
-
+def extract_text_from_image(img, ocr_mode, language, preprocess_mode):
+    """Extract text from image using specified parameters"""
     try:
-        processed_img = enhance_for_measurements(img, enhance_mode)
-        config = get_measurement_config(detection_mode, language)
+        # Apply preprocessing
+        processed_img = preprocess_for_handwriting(img, preprocess_mode)
+        
+        # Get OCR config
+        config = get_ocr_config(ocr_mode, language)
+        
+        # Extract text
         text = pytesseract.image_to_string(processed_img, config=config)
         cleaned_text = text.strip()
-
+        
+        # If result is poor, try with original image
         if len(cleaned_text) < 2:
             text_original = pytesseract.image_to_string(img, config=config)
             if len(text_original.strip()) > len(cleaned_text):
                 cleaned_text = text_original.strip()
-
-        measurements = extract_measurement_values(cleaned_text)
-
-        if measurements:
-            result_text = f"📏 EXTRACTED MEASUREMENTS:\\n\\n" + "\\n".join(measurements) + f"\\n\\nRAW TEXT: {cleaned_text}"
-        else:
-            result_text = f"RAW EXTRACTED TEXT:\\n{cleaned_text}\\n\\n(No measurements detected - check the raw text above)"
-
-        if status_callback:
-            status_callback(f"✅ {processing_type} completed.")
-        else:
-            print(f"✅ {processing_type} completed.")
-
-        # Return processed image and result text
-        return processed_img, result_text
-
+                processed_img = img
+        
+        return cleaned_text, processed_img
+        
     except Exception as e:
-        error_msg = f"Extraction Error: {str(e)}"
-        if status_callback:
-            status_callback(f"❌ {error_msg}")
-        else:
-            print(f"❌ {error_msg}")
-        return None, f"Error: {error_msg}"
+        st.error(f"OCR Error: {str(e)}")
+        return "", img
 
+def multiple_attempts_ocr(img, language):
+    """Try multiple OCR approaches and return all results"""
+    results = []
+    modes = ['handwriting', 'numbers', 'single_word', 'print']
+    preprocess_modes = ['auto', 'high_contrast', 'minimal', 'edge_enhance']
+    
+    progress_bar = st.progress(0)
+    total_attempts = len(modes) * len(preprocess_modes)
+    current_attempt = 0
+    
+    for ocr_mode in modes:
+        for prep_mode in preprocess_modes:
+            try:
+                current_attempt += 1
+                progress_bar.progress(current_attempt / total_attempts)
+                
+                processed = preprocess_for_handwriting(img, prep_mode)
+                config = get_ocr_config(ocr_mode, language)
+                text = pytesseract.image_to_string(processed, config=config).strip()
+                
+                if text and text not in results:
+                    results.append((text, f"{ocr_mode} + {prep_mode}"))
+                    
+            except Exception as e:
+                continue
+    
+    progress_bar.empty()
+    return results
 
-def smart_measurement_extract(img, language, status_callback=None):
-    """Smart extraction that tries multiple approaches and combines results"""
-    if status_callback:
-        status_callback("🧠 Smart extraction in progress - finding all measurements...")
-    else:
-        print("🧠 Smart extraction in progress - finding all measurements...")
+# Initialize session state
+if 'extracted_text' not in st.session_state:
+    st.session_state.extracted_text = ""
+if 'processed_image' not in st.session_state:
+    st.session_state.processed_image = None
+if 'multi_results' not in st.session_state:
+    st.session_state.multi_results = []
 
-    all_measurements = []
-    processing_details = []
+# Main header
+st.markdown('<h1 class="main-header">✍️ Handwriting & Text OCR Extractor</h1>', unsafe_allow_html=True)
 
-    combinations = [
-        ('measurement', 'handwriting'),
-        ('measurement', 'cable_optimized'),
-        ('cable_text', 'cable_optimized'),
-        ('both', 'auto'),
-        ('numbers_only', 'high_contrast')
-    ]
+# Sidebar configuration
+with st.sidebar:
+    st.header("🎛️ Configuration")
+    
+    # OCR Mode selection
+    ocr_mode = st.selectbox(
+        "OCR Mode",
+        options=['handwriting', 'print', 'mixed', 'numbers', 'single_word'],
+        format_func=lambda x: {
+            'handwriting': '📝 Handwriting Optimized',
+            'print': '🖨️ Printed Text',
+            'mixed': '🔀 Mixed Text',
+            'numbers': '🔢 Numbers/Measurements',
+            'single_word': '📄 Single Word'
+        }[x],
+        index=0
+    )
+    
+    # Language selection
+    language = st.selectbox(
+        "Language",
+        options=['eng', 'eng+ara', 'eng+chi_sim', 'eng+fra', 'eng+deu', 'eng+spa', 'eng+rus'],
+        format_func=lambda x: {
+            'eng': 'English',
+            'eng+ara': 'English + Arabic',
+            'eng+chi_sim': 'English + Chinese',
+            'eng+fra': 'English + French',
+            'eng+deu': 'English + German',
+            'eng+spa': 'English + Spanish',
+            'eng+rus': 'English + Russian'
+        }[x],
+        index=0
+    )
+    
+    # Preprocessing mode
+    preprocess_mode = st.selectbox(
+        "Preprocessing",
+        options=['auto', 'high_contrast', 'noise_reduction', 'edge_enhance', 'minimal'],
+        format_func=lambda x: {
+            'auto': '🤖 Auto Enhance',
+            'high_contrast': '⚡ High Contrast',
+            'noise_reduction': '🧹 Noise Reduction',
+            'edge_enhance': '📐 Edge Enhancement',
+            'minimal': '🎯 Minimal Processing'
+        }[x],
+        index=0
+    )
+    
+    st.markdown("---")
+    
+    # Tips section
+    st.markdown("""
+    <div class="tips-box">
+    <h4>💡 Tips for Better Results:</h4>
+    <ul>
+    <li>Upload clear, high-contrast images</li>
+    <li>Ensure good lighting</li>
+    <li>Try different modes for difficult text</li>
+    <li>Use "Numbers/Measurements" for values like "12.51m"</li>
+    <li>Crop images tightly around text area</li>
+    </ul>
+    </div>
+    """, unsafe_allow_html=True)
 
-    for detection_mode, enhance_mode in combinations:
-        try:
-            processed = enhance_for_measurements(img, enhance_mode)
-            config = get_measurement_config(detection_mode, language)
-            text = pytesseract.image_to_string(processed, config=config).strip()
+# Main content area
+col1, col2 = st.columns([1, 1])
 
-            if text:
-                measurements = extract_measurement_values(text)
-                if measurements:
-                    all_measurements.extend(measurements)
-                    processing_details.append(f"✅ {detection_mode} + {enhance_mode}: {', '.join(measurements)}")
-                else:
-                    processing_details.append(f"📝 {detection_mode} + {enhance_mode}: '{text}'")
-
-        except Exception as e:
-            processing_details.append(f"❌ {detection_mode} + {enhance_mode}: {str(e)}")
-            continue
-
-    unique_measurements = list(set(all_measurements))
-
-    if unique_measurements:
-        measurements_text = "\\n".join([f"• {m}" for m in unique_measurements])
-    else:
-        measurements_text = "No clear measurements detected"
-
-    details_text = "\\n".join(processing_details)
-
-    formatted_results = f"📏 SMART EXTRACTION RESULTS:\\n\\n{measurements_text}\\n\\n📊 DETAILS:\\n{details_text}"
-
-    if status_callback:
-        status_callback("🧠 Smart extraction completed.")
-    else:
-        print("🧠 Smart extraction completed.")
-
-    return None, formatted_results # Return None for preview image in smart mode
-
-
-# --- Image Processing and OCR Logic ---
-if uploaded_file is not None:
-    try:
+with col1:
+    st.header("📤 Upload Image")
+    
+    uploaded_file = st.file_uploader(
+        "Choose an image file",
+        type=['png', 'jpg', 'jpeg', 'bmp', 'tiff'],
+        help="Upload an image containing handwritten or printed text"
+    )
+    
+    if uploaded_file is not None:
+        # Display original image
         img = Image.open(uploaded_file)
-        image_placeholder.image(img, caption="Uploaded Image", use_column_width=True)
+        st.subheader("Original Image")
+        st.image(img, caption=f"Size: {img.size[0]}×{img.size[1]} pixels", use_column_width=True)
+        
+        # Action buttons
+        st.subheader("🎯 Actions")
+        
+        col_btn1, col_btn2 = st.columns(2)
+        
+        with col_btn1:
+            if st.button("✍️ Extract Text", type="primary", use_container_width=True):
+                with st.spinner("Processing image..."):
+                    extracted_text, processed_img = extract_text_from_image(
+                        img, ocr_mode, language, preprocess_mode
+                    )
+                    st.session_state.extracted_text = extracted_text
+                    st.session_state.processed_image = processed_img
+                    st.session_state.multi_results = []
+        
+        with col_btn2:
+            if st.button("🔄 Multiple Attempts", use_container_width=True):
+                with st.spinner("Trying multiple approaches..."):
+                    multi_results = multiple_attempts_ocr(img, language)
+                    st.session_state.multi_results = multi_results
+                    st.session_state.extracted_text = ""
+                    st.session_state.processed_image = None
 
-        # --- Add Buttons ---
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            # Selection extraction requires frontend canvas interaction which is complex in pure Streamlit
-            # We'll disable this button for now or require manual coordinates input (not implemented here)
-            extract_button = st.button("📏 Extract Selected (Advanced)", disabled=True)
-
-        with col2:
-            full_image_button = st.button("📄 Process Full Image")
-
-        with col3:
-            smart_extract_button = st.button("🧠 Smart Auto-Extract")
-
-        # --- Button Actions ---
-        if full_image_button:
-            processed_preview, result_text = extract_measurements(
-                img, detection_mode, language, enhance_mode, 'Full Image', status_placeholder.info
+with col2:
+    st.header("📊 Results")
+    
+    # Single extraction results
+    if st.session_state.extracted_text:
+        st.subheader("✅ Extracted Text")
+        
+        # Metrics
+        text_length = len(st.session_state.extracted_text)
+        word_count = len(st.session_state.extracted_text.split())
+        
+        col_m1, col_m2 = st.columns(2)
+        col_m1.metric("Characters", text_length)
+        col_m2.metric("Words", word_count)
+        
+        # Text result
+        st.text_area(
+            "Result:",
+            value=st.session_state.extracted_text,
+            height=200,
+            help="Copy this text to use elsewhere"
+        )
+        
+        # Download button
+        if st.session_state.extracted_text:
+            st.download_button(
+                "💾 Download as Text File",
+                data=st.session_state.extracted_text,
+                file_name="extracted_text.txt",
+                mime="text/plain",
+                use_container_width=True
             )
-            if processed_preview:
-                 st.image(processed_preview, caption="Processed Image Preview", use_column_width=True)
-            result_placeholder.text_area("📝 Extraction Results", result_text, height=300)
+    
+    # Multiple attempts results
+    if st.session_state.multi_results:
+        st.subheader("🔄 Multiple Attempt Results")
+        
+        # Find best result (longest non-empty)
+        best_result = ""
+        if st.session_state.multi_results:
+            valid_results = [r[0] for r in st.session_state.multi_results if r[0].strip()]
+            if valid_results:
+                best_result = max(valid_results, key=len)
+        
+        if best_result:
+            st.success(f"🎯 Best Result ({len(best_result)} chars): {best_result}")
+            
+            if st.button("📋 Use Best Result", use_container_width=True):
+                st.session_state.extracted_text = best_result
+                st.session_state.multi_results = []
+                st.experimental_rerun()
+        
+        # Show all results
+        with st.expander("View All Attempts", expanded=True):
+            for i, (result, method) in enumerate(st.session_state.multi_results, 1):
+                if result.strip():
+                    st.text(f"Attempt {i} ({method}): {result}")
+                    
+        # Download all results
+        if st.session_state.multi_results:
+            all_results_text = "\n".join([
+                f"Attempt {i} ({method}): {result}"
+                for i, (result, method) in enumerate(st.session_state.multi_results, 1)
+            ])
+            st.download_button(
+                "💾 Download All Results",
+                data=all_results_text,
+                file_name="all_ocr_attempts.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
 
+# Show processed image if available
+if st.session_state.processed_image is not None:
+    st.header("🔧 Processed Image")
+    col_proc1, col_proc2 = st.columns(2)
+    
+    with col_proc1:
+        st.subheader("Before Processing")
+        if uploaded_file is not None:
+            st.image(Image.open(uploaded_file), use_column_width=True)
+    
+    with col_proc2:
+        st.subheader("After Processing")
+        st.image(st.session_state.processed_image, use_column_width=True)
 
-        if smart_extract_button:
-             processed_preview, result_text = smart_measurement_extract(
-                 img, language, status_placeholder.info
-             )
-             # Smart extract doesn't provide a single preview image in this implementation
-             result_placeholder.text_area("📝 Extraction Results", result_text, height=300)
+# Footer information
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #666; padding: 20px;'>
+<p>✍️ <strong>Handwriting OCR Extractor</strong> - Built with Streamlit & Tesseract</p>
+<p>🎯 Optimized for handwritten text, measurements, and mixed content</p>
+</div>
+""", unsafe_allow_html=True)
 
-
-    except Exception as e:
-        st.error(f"An error occurred: {e}")
-        status_placeholder.error("❌ Error loading or processing image.")
-
-# --- Tips Section ---
-st.sidebar.markdown("---")
-st.sidebar.markdown("""
-    #### 💡 Tips:
-    - Select tight crops for measurements. (Manual selection not yet supported in this Streamlit version)
-    - Good contrast helps OCR accuracy.
-    - 'Smart Auto-Extract' tries multiple settings.
-""")
-
-# --- How to Run ---
-st.sidebar.markdown("---")
-st.sidebar.markdown("""
-    #### How to Run:
-    1. Save this code as a Python file (e.g., `ocr_app.py`).
-    2. Make sure you have Tesseract OCR installed on your system.
-    3. Open your terminal or command prompt.
-    4. Navigate to the directory where you saved the file.
-    5. Run the command: `streamlit run ocr_app.py`
-    6. Your browser will open with the application.
-""")
+# Instructions for setup (shown in expander)
+with st.expander("📋 Setup Instructions"):
+    st.markdown("""
+    ### Required Dependencies
+    
+    Install the following packages:
+    ```bash
+    pip install streamlit pytesseract pillow opencv-python numpy scipy scikit-image
+    ```
+    
+    ### Tesseract Installation
+    
+    **Ubuntu/Debian:**
+    ```bash
+    sudo apt update
+    sudo apt install tesseract-ocr tesseract-ocr-all
+    ```
+    
+    **Windows:**
+    Download from: https://github.com/UB-Mannheim/tesseract/wiki
+    
+    **macOS:**
+    ```bash
+    brew install tesseract tesseract-lang
+    ```
+    
+    ### Running the App
+    ```bash
+    streamlit run app.py
+    ```
+    """)
