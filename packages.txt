@@ -1,8 +1,7 @@
-pip install --quiet pytesseract pillow opencv-python ipywidgets numpy scipy scikit-image
-!apt update -qq && apt install -qq -y tesseract-ocr tesseract-ocr-all
-tesseract-ocr
-tesseract-ocr-all
-tesseract-ocr-eng
-tesseract-ocr-osd
-libtesseract-dev
-libleptonica-dev
+streamlit
+pytesseract
+Pillow
+opencv-python-headless
+numpy
+scipy
+scikit-image
