@@ -1,7 +1,2 @@
-streamlit
-pytesseract
-Pillow
-opencv-python-headless
-numpy
-scipy
-scikit-image
+tesseract-ocr-all
+tesseract-ocr
