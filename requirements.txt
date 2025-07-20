@@ -1,5 +1,5 @@
 pytesseract
-streamlit-all
+streamlit-drawable
 streamlit-drawable-canvas
 streamlit
 Pillow
