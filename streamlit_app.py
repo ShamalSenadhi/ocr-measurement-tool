@@ -1,10 +1,3 @@
-# Install required packages
-!pip install --quiet streamlit pytesseract pillow opencv-python numpy scipy scikit-image
-!apt update -qq && apt install -qq -y tesseract-ocr tesseract-ocr-all
-
-# Note: You will need to have Tesseract OCR installed on your system
-# For Debian/Ubuntu: sudo apt update && sudo apt install tesseract-ocr tesseract-ocr-all
-# For macOS (using Homebrew): brew install tesseract tesseract-lang
 
 import streamlit as st
 import pytesseract
