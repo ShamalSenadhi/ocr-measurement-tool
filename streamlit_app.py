@@ -184,7 +184,18 @@ def enhance_for_measurement(img, method):
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
             enhanced = clahe.apply(enhanced)
             
-        else:  # Original and simplified processing for speed
+        elif method == 'Edge Enhanced':
+            # Edge enhancement for better text detection
+            enhanced = cv2.convertScaleAbs(gray, alpha=1.2, beta=10)
+            kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+            enhanced = cv2.filter2D(enhanced, -1, kernel)
+            
+        elif method == 'Handwriting Optimized':
+            # Optimized for handwritten text
+            enhanced = cv2.convertScaleAbs(gray, alpha=1.8, beta=30)
+            enhanced = cv2.bilateralFilter(enhanced, 9, 75, 75)
+            
+        else:  # Original
             enhanced = gray
         
         return Image.fromarray(enhanced)
@@ -233,11 +244,11 @@ def extract_length_measurements(text):
     
     return measurements
 
-@timeout_handler(60)
+@timeout_handler(120)
 def process_single_image(img, reader, image_name):
-    """Process a single image with optimized enhancement methods"""
-    # Reduced methods for faster processing and less memory usage
-    methods = ['Original', 'High Contrast', 'Cable Optimized', 'Denoised']
+    """Process a single image with all 6 enhancement methods"""
+    # All 6 methods as requested
+    methods = ['Original', 'High Contrast', 'Cable Optimized', 'Denoised', 'Edge Enhanced', 'Handwriting Optimized']
     
     results = {}
     all_measurements = set()
@@ -290,7 +301,7 @@ def process_single_image(img, reader, image_name):
             gc.collect()
             
             # Small delay to prevent overwhelming the system
-            time.sleep(0.1)
+            time.sleep(0.2)  # Increased delay for stability
         
         progress_bar.empty()
         status_text.empty()
@@ -375,25 +386,25 @@ def calculate_length_difference(measurements1, measurements2):
         }
 
 def display_results_grid(results, image_name):
-    """Display results in a grid format with improved layout"""
+    """Display results in a grid format with all 6 methods"""
     st.markdown(f"""
     <div class="results-section">
         <h2>🖼️ {image_name} Analysis Results</h2>
     </div>
     """, unsafe_allow_html=True)
     
-    # Create 2 rows of 2 columns (reduced from 3 for better mobile compatibility)
-    methods = list(results.keys())
+    # Create 2 rows of 3 columns for all 6 methods
+    methods = ['Original', 'High Contrast', 'Cable Optimized', 'Denoised', 'Edge Enhanced', 'Handwriting Optimized']
     
-    # Display in pairs
-    for i in range(0, len(methods), 2):
-        cols = st.columns(2)
-        for j, col in enumerate(cols):
-            if i + j < len(methods):
-                method = methods[i + j]
-                result = results[method]
+    for row in range(2):
+        cols = st.columns(3)
+        for col_idx in range(3):
+            method_idx = row * 3 + col_idx
+            if method_idx < len(methods):
+                method = methods[method_idx]
+                result = results.get(method, {'image': None, 'measurements': []})
                 
-                with col:
+                with cols[col_idx]:
                     st.markdown(f"**🎨 {method}**")
                     if result['image'] is not None:
                         st.image(result['image'], use_column_width=True)
@@ -436,15 +447,15 @@ def main():
     
     # Sidebar with features
     with st.sidebar:
-        st.markdown("### ✨ Features (Optimized)")
+        st.markdown("### ✨ Features (All 6 Methods)")
         st.markdown("""
         - 🤖 **EasyOCR Technology**: Neural network-based text recognition
         - 📏 **Smart Unit Conversion**: Automatically converts mm/cm to meters  
-        - 🎨 **8 Total Enhancements**: 4 methods per image (optimized for speed)
+        - 🎨 **12 Total Enhancements**: 6 methods per image (all original methods)
         - 🔄 **Comparative Analysis**: Side-by-side measurement comparison
         - 🎯 **Precise Detection**: Focuses only on length measurements
-        - 📊 **Fast Processing**: Optimized for deployment environments
-        - ⚡ **Memory Efficient**: Reduced resource usage
+        - 📊 **Comprehensive Results**: Individual and comparative summaries
+        - ⚡ **Optimized Processing**: Enhanced for deployment stability
         """)
         
         st.markdown("### 🎯 Supported Formats")
@@ -460,7 +471,8 @@ def main():
         - Upload clear, well-lit images
         - Ensure text is visible and readable
         - Large images are automatically resized
-        - Processing may take 30-60 seconds per image
+        - Processing may take 2-3 minutes per image (all 6 methods)
+        - Be patient during model download on first run
         """)
     
     # Upload section
@@ -494,7 +506,7 @@ def main():
                 
                 st.markdown("---")
                 st.markdown("## 🔄 Processing Images...")
-                st.info("⏳ This may take 1-2 minutes. Please be patient...")
+                st.info("⏳ This may take 2-4 minutes for all 6 methods per image. Please be patient...")
                 
                 # Process both images
                 col1, col2 = st.columns(2)
