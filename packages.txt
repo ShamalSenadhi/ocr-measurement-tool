@@ -1,6 +1,1 @@
 easyocr 
-pillow 
-opencv-python 
-ipywidgets 
-numpy 
-matplotlib
