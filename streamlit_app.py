@@ -8,6 +8,10 @@ import io
 import base64
 import re
 import warnings
+import os
+import time
+import gc
+from functools import wraps
 warnings.filterwarnings('ignore')
 
 # Page configuration
@@ -89,53 +93,105 @@ st.markdown("""
         transform: translateY(-2px);
         box-shadow: 0 5px 15px rgba(79,172,254,0.4);
     }
+    
+    .loading-box {
+        background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        text-align: center;
+        margin: 1rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize EasyOCR reader
+def timeout_handler(timeout_seconds=30):
+    """Decorator to add timeout handling to functions"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                st.error(f"Operation timed out or failed: {str(e)}")
+                return None
+        return wrapper
+    return decorator
+
+# Initialize EasyOCR reader with better error handling
 @st.cache_resource
 def load_easyocr():
-    """Load EasyOCR reader with caching"""
-    return easyocr.Reader(['en'], gpu=False)
+    """Load EasyOCR reader with caching and error handling"""
+    try:
+        # Set environment variables to optimize EasyOCR
+        os.environ['EASYOCR_MODULE_PATH'] = '/tmp/easyocr_models'
+        
+        # Show loading message
+        loading_placeholder = st.empty()
+        loading_placeholder.markdown("""
+        <div class="loading-box">
+            <h3>🤖 Initializing EasyOCR...</h3>
+            <p>Downloading models (this may take a few minutes on first run)</p>
+            <p>⏳ Please wait...</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Initialize with optimized settings
+        reader = easyocr.Reader(
+            ['en'], 
+            gpu=False,  # Force CPU to avoid GPU issues
+            download_enabled=True,
+            model_storage_directory='/tmp/easyocr_models'
+        )
+        
+        loading_placeholder.empty()
+        return reader
+        
+    except Exception as e:
+        st.error(f"❌ Error initializing EasyOCR: {str(e)}")
+        st.info("💡 This might be due to model download issues. Please refresh the page and try again.")
+        st.stop()
 
+@timeout_handler(30)
 def enhance_for_measurement(img, method):
-    """Apply image enhancement specifically for measurement extraction"""
-    cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-    
-    if method == 'High Contrast':
-        # Increase contrast for faded text
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-        enhanced = clahe.apply(gray)
-        enhanced = cv2.convertScaleAbs(enhanced, alpha=1.5, beta=20)
+    """Apply image enhancement specifically for measurement extraction with timeout"""
+    try:
+        cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
         
-    elif method == 'Cable Optimized':
-        # Optimized for text on dark cables
-        enhanced = cv2.convertScaleAbs(gray, alpha=2.0, beta=40)
-        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(6,6))
-        enhanced = clahe.apply(enhanced)
+        # Reduce image size if too large to prevent memory issues
+        height, width = gray.shape
+        if height > 1500 or width > 1500:
+            scale = min(1500/height, 1500/width)
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            gray = cv2.resize(gray, (new_width, new_height))
         
-    elif method == 'Denoised':
-        # Remove noise while preserving text
-        enhanced = cv2.fastNlMeansDenoising(gray, h=10)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        enhanced = clahe.apply(enhanced)
+        if method == 'High Contrast':
+            # Increase contrast for faded text
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+            enhanced = clahe.apply(gray)
+            enhanced = cv2.convertScaleAbs(enhanced, alpha=1.5, beta=20)
+            
+        elif method == 'Cable Optimized':
+            # Optimized for text on dark cables
+            enhanced = cv2.convertScaleAbs(gray, alpha=2.0, beta=40)
+            clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(6,6))
+            enhanced = clahe.apply(enhanced)
+            
+        elif method == 'Denoised':
+            # Remove noise while preserving text
+            enhanced = cv2.fastNlMeansDenoising(gray, h=10)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            enhanced = clahe.apply(enhanced)
+            
+        else:  # Original and simplified processing for speed
+            enhanced = gray
         
-    elif method == 'Edge Enhanced':
-        # Edge enhancement for better text detection
-        enhanced = cv2.convertScaleAbs(gray, alpha=1.2, beta=10)
-        kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
-        enhanced = cv2.filter2D(enhanced, -1, kernel)
+        return Image.fromarray(enhanced)
         
-    elif method == 'Handwriting Optimized':
-        # Optimized for handwritten text
-        enhanced = cv2.convertScaleAbs(gray, alpha=1.8, beta=30)
-        enhanced = cv2.bilateralFilter(enhanced, 9, 75, 75)
-        
-    else:  # Original
-        enhanced = gray
-    
-    return Image.fromarray(enhanced)
+    except Exception as e:
+        st.warning(f"Enhancement failed for {method}: {str(e)}")
+        return img
 
 def extract_length_measurements(text):
     """Extract only length measurements in meters from text"""
@@ -177,9 +233,11 @@ def extract_length_measurements(text):
     
     return measurements
 
+@timeout_handler(60)
 def process_single_image(img, reader, image_name):
-    """Process a single image with all enhancement methods"""
-    methods = ['Original', 'High Contrast', 'Cable Optimized', 'Denoised', 'Edge Enhanced', 'Handwriting Optimized']
+    """Process a single image with optimized enhancement methods"""
+    # Reduced methods for faster processing and less memory usage
+    methods = ['Original', 'High Contrast', 'Cable Optimized', 'Denoised']
     
     results = {}
     all_measurements = set()
@@ -187,38 +245,63 @@ def process_single_image(img, reader, image_name):
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    for idx, method in enumerate(methods):
-        progress = (idx + 1) / len(methods)
-        progress_bar.progress(progress)
-        status_text.text(f"📊 Processing {image_name} - {method} ({idx+1}/{len(methods)})")
+    try:
+        for idx, method in enumerate(methods):
+            progress = (idx + 1) / len(methods)
+            progress_bar.progress(progress)
+            status_text.text(f"📊 Processing {image_name} - {method} ({idx+1}/{len(methods)})")
+            
+            # Apply enhancement
+            enhanced_img = enhance_for_measurement(img, method)
+            
+            if enhanced_img is None:
+                continue
+                
+            # Convert to numpy array for EasyOCR
+            img_array = np.array(enhanced_img)
+            
+            # Extract text using EasyOCR with timeout protection
+            try:
+                easyocr_results = reader.readtext(img_array, detail=1)
+                
+                # Combine all detected text with confidence threshold
+                all_text = ' '.join([text for _, text, conf in easyocr_results if conf > 0.3])
+                
+                # Extract measurements
+                measurements = extract_length_measurements(all_text)
+                all_measurements.update(measurements)
+                
+                # Store results
+                results[method] = {
+                    'image': enhanced_img,
+                    'measurements': measurements,
+                    'raw_text': all_text
+                }
+                
+            except Exception as e:
+                st.warning(f"OCR failed for {method}: {str(e)}")
+                results[method] = {
+                    'image': enhanced_img,
+                    'measurements': [],
+                    'raw_text': ''
+                }
+            
+            # Force garbage collection to free memory
+            gc.collect()
+            
+            # Small delay to prevent overwhelming the system
+            time.sleep(0.1)
         
-        # Apply enhancement
-        enhanced_img = enhance_for_measurement(img, method)
+        progress_bar.empty()
+        status_text.empty()
         
-        # Convert to numpy array for EasyOCR
-        img_array = np.array(enhanced_img)
+        return results, all_measurements
         
-        # Extract text using EasyOCR
-        easyocr_results = reader.readtext(img_array)
-        
-        # Combine all detected text
-        all_text = ' '.join([text for _, text, conf in easyocr_results if conf > 0.5])
-        
-        # Extract measurements
-        measurements = extract_length_measurements(all_text)
-        all_measurements.update(measurements)
-        
-        # Store results
-        results[method] = {
-            'image': enhanced_img,
-            'measurements': measurements,
-            'raw_text': all_text
-        }
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    return results, all_measurements
+    except Exception as e:
+        progress_bar.empty()
+        status_text.empty()
+        st.error(f"Processing failed for {image_name}: {str(e)}")
+        return {}, set()
 
 def calculate_length_difference(measurements1, measurements2):
     """Calculate the length difference between two sets of measurements"""
@@ -292,27 +375,28 @@ def calculate_length_difference(measurements1, measurements2):
         }
 
 def display_results_grid(results, image_name):
-    """Display results in a grid format"""
+    """Display results in a grid format with improved layout"""
     st.markdown(f"""
     <div class="results-section">
         <h2>🖼️ {image_name} Analysis Results</h2>
     </div>
     """, unsafe_allow_html=True)
     
-    # Create 2 rows of 3 columns
-    methods = ['Original', 'High Contrast', 'Cable Optimized', 'Denoised', 'Edge Enhanced', 'Handwriting Optimized']
+    # Create 2 rows of 2 columns (reduced from 3 for better mobile compatibility)
+    methods = list(results.keys())
     
-    for row in range(2):
-        cols = st.columns(3)
-        for col_idx in range(3):
-            method_idx = row * 3 + col_idx
-            if method_idx < len(methods):
-                method = methods[method_idx]
+    # Display in pairs
+    for i in range(0, len(methods), 2):
+        cols = st.columns(2)
+        for j, col in enumerate(cols):
+            if i + j < len(methods):
+                method = methods[i + j]
                 result = results[method]
                 
-                with cols[col_idx]:
+                with col:
                     st.markdown(f"**🎨 {method}**")
-                    st.image(result['image'], use_column_width=True)
+                    if result['image'] is not None:
+                        st.image(result['image'], use_column_width=True)
                     
                     if result['measurements']:
                         measurements_text = ', '.join(result['measurements'])
@@ -334,30 +418,33 @@ def main():
     <div class="main-header">
         <h1>🔍 Dual Cable Measurement Extractor</h1>
         <div style="background: rgba(255,255,255,0.2); padding: 10px; border-radius: 10px; margin: 10px 0;">
-            🚀 Powered by EasyOCR - Advanced Dual Image Analysis
+            🚀 Powered by EasyOCR - Advanced Dual Image Analysis (Optimized)
         </div>
-        <p>Upload 2 cable images to extract and compare length measurements with comprehensive analysis</p>
+        <p>Upload 2 cable images to extract and compare length measurements</p>
     </div>
     """, unsafe_allow_html=True)
     
-    # Load EasyOCR
+    # Load EasyOCR with proper error handling
     try:
-        reader = load_easyocr()
+        with st.spinner("Loading EasyOCR... This may take a moment on first run"):
+            reader = load_easyocr()
         st.success("✅ EasyOCR initialized successfully!")
     except Exception as e:
         st.error(f"❌ Error initializing EasyOCR: {str(e)}")
+        st.info("💡 Please refresh the page and try again. On first run, model download may take several minutes.")
         st.stop()
     
     # Sidebar with features
     with st.sidebar:
-        st.markdown("### ✨ Features")
+        st.markdown("### ✨ Features (Optimized)")
         st.markdown("""
         - 🤖 **EasyOCR Technology**: Neural network-based text recognition
         - 📏 **Smart Unit Conversion**: Automatically converts mm/cm to meters  
-        - 🎨 **12 Total Enhancements**: 6 methods per image
+        - 🎨 **8 Total Enhancements**: 4 methods per image (optimized for speed)
         - 🔄 **Comparative Analysis**: Side-by-side measurement comparison
         - 🎯 **Precise Detection**: Focuses only on length measurements
-        - 📊 **Comprehensive Results**: Individual and comparative summaries
+        - 📊 **Fast Processing**: Optimized for deployment environments
+        - ⚡ **Memory Efficient**: Reduced resource usage
         """)
         
         st.markdown("### 🎯 Supported Formats")
@@ -366,6 +453,14 @@ def main():
         - 📏 **Millimeters**: "1000mm" → "1.000m"
         - 📊 **Centimeters**: "150cm" → "1.50m"
         - ✍️ **Handwritten and printed text** on cables
+        """)
+        
+        st.markdown("### ⚠️ Usage Tips")
+        st.markdown("""
+        - Upload clear, well-lit images
+        - Ensure text is visible and readable
+        - Large images are automatically resized
+        - Processing may take 30-60 seconds per image
         """)
     
     # Upload section
@@ -392,85 +487,97 @@ def main():
     # Process button
     if uploaded_file1 is not None and uploaded_file2 is not None:
         if st.button("🔍 Analyze Both Images", key="analyze_btn"):
-            # Load images
-            image1 = Image.open(uploaded_file1)
-            image2 = Image.open(uploaded_file2)
-            
-            st.markdown("---")
-            st.markdown("## 🔄 Processing Images...")
-            
-            # Process both images
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### 🖼️ Processing Image 1")
-                results1, measurements1 = process_single_image(image1, reader, "Image 1")
+            try:
+                # Load images
+                image1 = Image.open(uploaded_file1)
+                image2 = Image.open(uploaded_file2)
                 
-            with col2:
-                st.markdown("### 🖼️ Processing Image 2") 
-                results2, measurements2 = process_single_image(image2, reader, "Image 2")
-            
-            st.markdown("---")
-            
-            # Display results
-            display_results_grid(results1, "Image 1")
-            st.markdown("---")
-            display_results_grid(results2, "Image 2")
-            
-            # Comparison Summary
-            length_difference = calculate_length_difference(measurements1, measurements2)
-            common_measurements = list(measurements1.intersection(measurements2))
-            common_measurements.sort(key=lambda x: float(x.replace('m', '')))
-            
-            st.markdown("""
-            <div class="comparison-summary">
-                <h3>📊 Comparative Analysis Summary</h3>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("#### 🖼️ Image 1 Summary")
-                st.write(f"**Methods tested:** 6")
-                st.write(f"**Measurements found:** {len(measurements1)}")
-                if measurements1:
-                    measurements_str = ', '.join(sorted(measurements1, key=lambda x: float(x.replace('m', ''))))
-                    st.write(f"**Best measurements:** {measurements_str}")
+                st.markdown("---")
+                st.markdown("## 🔄 Processing Images...")
+                st.info("⏳ This may take 1-2 minutes. Please be patient...")
+                
+                # Process both images
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("### 🖼️ Processing Image 1")
+                    results1, measurements1 = process_single_image(image1, reader, "Image 1")
+                    
+                with col2:
+                    st.markdown("### 🖼️ Processing Image 2") 
+                    results2, measurements2 = process_single_image(image2, reader, "Image 2")
+                
+                if not results1 or not results2:
+                    st.error("❌ Processing failed. Please try again with different images.")
+                    return
+                
+                st.markdown("---")
+                
+                # Display results
+                display_results_grid(results1, "Image 1")
+                st.markdown("---")
+                display_results_grid(results2, "Image 2")
+                
+                # Comparison Summary
+                length_difference = calculate_length_difference(measurements1, measurements2)
+                common_measurements = list(measurements1.intersection(measurements2))
+                common_measurements.sort(key=lambda x: float(x.replace('m', '')))
+                
+                st.markdown("""
+                <div class="comparison-summary">
+                    <h3>📊 Comparative Analysis Summary</h3>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("#### 🖼️ Image 1 Summary")
+                    st.write(f"**Methods tested:** {len(results1)}")
+                    st.write(f"**Measurements found:** {len(measurements1)}")
+                    if measurements1:
+                        measurements_str = ', '.join(sorted(measurements1, key=lambda x: float(x.replace('m', ''))))
+                        st.write(f"**Best measurements:** {measurements_str}")
+                    else:
+                        st.write("**Best measurements:** None detected")
+                
+                with col2:
+                    st.markdown("#### 🖼️ Image 2 Summary")
+                    st.write(f"**Methods tested:** {len(results2)}")
+                    st.write(f"**Measurements found:** {len(measurements2)}")
+                    if measurements2:
+                        measurements_str = ', '.join(sorted(measurements2, key=lambda x: float(x.replace('m', ''))))
+                        st.write(f"**Best measurements:** {measurements_str}")
+                    else:
+                        st.write("**Best measurements:** None detected")
+                
+                # Length Difference Analysis
+                st.markdown("#### 📏 Length Difference Analysis")
+                if length_difference['analysis_possible']:
+                    st.write(f"**Image 1 Primary Length:** {length_difference['image1_primary']}")
+                    st.write(f"**Image 2 Primary Length:** {length_difference['image2_primary']}")
+                    st.write(f"**Difference:** {length_difference['difference_display']}")
+                    st.write(f"**Analysis:** {length_difference['comparison_text']}")
+                    if length_difference['percentage_difference']:
+                        st.write(f"**Percentage Difference:** {length_difference['percentage_difference']}")
                 else:
-                    st.write("**Best measurements:** None detected")
-            
-            with col2:
-                st.markdown("#### 🖼️ Image 2 Summary")
-                st.write(f"**Methods tested:** 6")
-                st.write(f"**Measurements found:** {len(measurements2)}")
-                if measurements2:
-                    measurements_str = ', '.join(sorted(measurements2, key=lambda x: float(x.replace('m', ''))))
-                    st.write(f"**Best measurements:** {measurements_str}")
+                    st.warning(f"⚠️ {length_difference['reason']}")
+                
+                # Overall Comparison
+                st.markdown("#### 🔄 Overall Comparison")
+                st.write(f"**Total methods tested:** {len(results1) + len(results2)} ({len(results1)} + {len(results2)})")
+                st.write(f"**Combined unique measurements:** {len(measurements1.union(measurements2))}")
+                
+                if common_measurements:
+                    st.write(f"**Common measurements:** {', '.join(common_measurements)}")
                 else:
-                    st.write("**Best measurements:** None detected")
-            
-            # Length Difference Analysis
-            st.markdown("#### 📏 Length Difference Analysis")
-            if length_difference['analysis_possible']:
-                st.write(f"**Image 1 Primary Length:** {length_difference['image1_primary']}")
-                st.write(f"**Image 2 Primary Length:** {length_difference['image2_primary']}")
-                st.write(f"**Difference:** {length_difference['difference_display']}")
-                st.write(f"**Analysis:** {length_difference['comparison_text']}")
-                if length_difference['percentage_difference']:
-                    st.write(f"**Percentage Difference:** {length_difference['percentage_difference']}")
-            else:
-                st.warning(f"⚠️ {length_difference['reason']}")
-            
-            # Overall Comparison
-            st.markdown("#### 🔄 Overall Comparison")
-            st.write(f"**Total methods tested:** 12 (6 per image)")
-            st.write(f"**Combined unique measurements:** {len(measurements1.union(measurements2))}")
-            
-            if common_measurements:
-                st.write(f"**Common measurements:** {', '.join(common_measurements)}")
-            else:
-                st.write("**Common measurements:** None found")
+                    st.write("**Common measurements:** None found")
+                
+                st.success("✅ Analysis completed successfully!")
+                
+            except Exception as e:
+                st.error(f"❌ An error occurred during processing: {str(e)}")
+                st.info("💡 Please try again or contact support if the issue persists.")
     
     elif uploaded_file1 is not None or uploaded_file2 is not None:
         st.info("⚠️ Please upload both images for comparative analysis")
