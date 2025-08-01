@@ -1,2 +1,6 @@
-tesseract-ocr-all
-tesseract-ocr
+easyocr 
+pillow 
+opencv-python 
+ipywidgets 
+numpy 
+matplotlib
